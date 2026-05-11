@@ -121,6 +121,16 @@ def export(
     input_size: int = typer.Option(512, "--input-size"),
     opset: int = typer.Option(17, "--opset"),
     simplify: bool = typer.Option(True, "--simplify/--no-simplify"),
+    dynamic_hw: bool = typer.Option(
+        False,
+        "--dynamic-hw/--fixed-hw",
+        help=(
+            "Export with dynamic height and width axes so the ONNX model "
+            "accepts any (B, 3, H, W) fp32 input. --input-size is used as "
+            "the tracing shape only. Transformer attention is O((HW)^2) so "
+            "memory grows with resolution. Default is fixed H/W."
+        ),
+    ),
 ) -> None:
     """Export a checkpoint to ONNX with parity verification."""
     import torch
@@ -136,6 +146,11 @@ def export(
     m = build_ddcolor(mcfg, pretrained=False)
     m.load_state_dict(payload["model"])
     export_onnx_from_model(
-        m, input_size=input_size, export_path=output, opset=opset, simplify=simplify
+        m,
+        input_size=input_size,
+        export_path=output,
+        opset=opset,
+        simplify=simplify,
+        dynamic_hw=dynamic_hw,
     )
     typer.echo(f"wrote {output}")
