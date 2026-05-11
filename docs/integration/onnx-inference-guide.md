@@ -297,7 +297,246 @@ you're probably not running the model at all or hitting §4.5.
 
 ---
 
-## 8. File reference (source of truth)
+## 8. Tiling for high-resolution inputs (4K and beyond)
+
+### 8.0 Read this first
+
+**You probably don't need to tile.** The default `coliraz infer` pipeline
+already handles arbitrary input sizes by:
+
+1. running the model on a low-res (e.g. 256² or 512²) view of the image, and
+2. upsampling the predicted AB chroma to full resolution, then
+3. merging that AB with the **untouched full-resolution L** from the original.
+
+This is the same principle as chroma subsampling in JPEG/H.264 — the human
+visual system is far more sensitive to luminance detail than to chroma
+detail, so bilinear upsampling of AB is essentially invisible. The pipeline
+gives pixel-perfect L for free and globally-coherent color decisions because
+the model sees the whole image at once at low res.
+
+**Implement the simple recipe in §3 first.** Only add tiling if you have a
+concrete use case the simple recipe fails on (see §8.1).
+
+### 8.1 When tiling is the right answer
+
+Three scenarios:
+
+1. **The host hardware truly cannot run the model at a moderate fixed
+   resolution.** E.g. you're on a small embedded GPU with <2 GB VRAM and
+   even 512² OOMs. *Tiling can solve this.*
+2. **You need locally-varying chroma at greater than ~512² resolution.**
+   Examples: brand logos, small flags, fine textile patterns that span a
+   few pixels at 4K and get smeared by AB upsampling. *Tiling can solve this.*
+3. **The image contains spatially distinct regions where the global low-res
+   pass picks a compromise color** (e.g. half the image is a beach scene,
+   half is a forest, and the low-res pass picks a desaturated middle ground
+   for both). *Tiling can sometimes help — see §8.2 for the caveat.*
+
+For "I want to colorize a normal 4K photo," scenarios 1–3 rarely apply.
+Use the simple pipeline.
+
+### 8.2 The fundamental caveat: this model is a *global* operator
+
+The transformer color decoder uses **learnable color queries** that
+cross-attend to the entire feature map. These queries represent
+image-level color decisions ("what's the dominant skin tone in this
+image", "is the sky cloudy or sunny"). When you tile and process each tile
+independently:
+
+- Each tile's queries see only that tile's content.
+- A tile of pure sky predicts everything as blue, including an unfortunate
+  object in that tile.
+- A tile of pure face has no idea there's a red car nearby that should
+  inform shadow color.
+
+You will see:
+
+- **Color drift at tile boundaries** (one tile picks slightly warmer sky than
+  the adjacent tile).
+- **Contextually wrong colors** in tiles that lack distinguishing content
+  (a tile that's all texture but no recognizable object).
+
+Overlap + feather (§8.4) hides the first symptom but **does not fix the
+second**. The only real fix for the second is a two-pass approach
+(§8.5) or a different architecture entirely.
+
+### 8.3 Tile chroma on top of the pipeline (recommended hybrid)
+
+The cleanest practical recipe — combines global coherence from the
+pipeline with locally-detailed chroma where it matters:
+
+```
+1. Run the simple pipeline (§3) to get a globally-coherent
+   AB_global at full resolution.
+2. Identify regions that need detailed chroma. Heuristics:
+   - high-frequency edges in L_full (Sobel/Canny → dilate)
+   - manual user-drawn masks
+   - all pixels (if you want refinement everywhere)
+3. For each region, extract overlapping tiles at full resolution
+   from the gray-RGB input (built per §4.1).
+4. Run the model on each tile → AB_tile.
+5. Blend AB_tile with AB_global using a soft window
+   (raised-cosine; see §8.4 for the kernel) and a mask that
+   restricts the blend to the chosen region.
+6. Final AB = mask·AB_blended + (1 - mask)·AB_global.
+7. Continue at step 9 of §3 (LAB merge → RGB).
+```
+
+This is more work than §8.4 but produces the best results: global color
+coherence is preserved everywhere, local refinement kicks in where you
+choose. The C# implementer can ship §8.4 first and add §8.3 as a follow-up.
+
+### 8.4 Standalone tiling with overlap + feather
+
+The minimum viable tiling approach. Each tile is processed independently
+and blended with a raised-cosine window.
+
+#### Parameters
+
+| Parameter | Recommendation | Notes |
+|---|---|---|
+| Tile size `T` | 512 (or 256 if memory-bound) | Must be a multiple of 32 |
+| Overlap `O` | `T / 4` (= 128 for T=512) | Must be a multiple of 32; smaller = more seams, larger = more compute |
+| Stride `S` | `T - O` (= 384) | |
+| Padding mode | reflect | Edge tiles use mirrored padding |
+
+#### Algorithm
+
+```
+INPUT:  H×W full-res RGB image
+OUTPUT: H×W full-res AB chroma map (then continue per §3 step 9)
+
+# Pad H/W so tile grid covers the image
+pad_H = align_up(H, S) + O    # last tile reaches H+O if needed
+pad_W = align_up(W, S) + O
+rgb_padded = reflect_pad(rgb_full, top=O/2, bottom=pad_H-H-O/2, ...)
+
+# Build the gray-as-RGB input over the padded canvas (per §4.1)
+gray_rgb_padded = derive_gray_rgb(rgb_padded)
+
+# Pre-compute the 2D blend weight: raised cosine in both dims
+# w(i) = 0.5 * (1 - cos(2π · i / (T - 1)))   for i in [0, T-1]
+# 2D weight W2D[i,j] = w(i) * w(j)
+weight2d = raised_cosine_2d(T, T)
+
+# Accumulator buffers (float32)
+ab_sum     = zeros(2, pad_H, pad_W)
+weight_sum = zeros(1, pad_H, pad_W)   # 1 channel, broadcast to AB
+
+# Iterate over tile origins
+for ty in range(0, pad_H - T + 1, S):
+    for tx in range(0, pad_W - T + 1, S):
+        tile_in = gray_rgb_padded[ty:ty+T, tx:tx+T, :]          # (T, T, 3)
+        tile_in = to_chw_batch1_float32(tile_in)                 # (1, 3, T, T)
+        tile_ab = ort.run(tile_in)[0]                            # (1, 2, T, T)
+        tile_ab = squeeze_batch(tile_ab)                         # (2, T, T)
+
+        # accumulate with the 2D feather weights
+        ab_sum[:, ty:ty+T, tx:tx+T]     += tile_ab * weight2d    # broadcast over channel
+        weight_sum[:, ty:ty+T, tx:tx+T] += weight2d
+
+# Normalize (avoid div-by-zero at the corners, which can happen if you
+# stride doesn't perfectly cover the canvas; add a tiny epsilon)
+ab_padded = ab_sum / clamp(weight_sum, min=1e-6)
+
+# Unpad
+ab_full = ab_padded[:, O/2:O/2+H, O/2:O/2+W]
+
+# Continue at §3 step 9 (concat L_full + ab_full → LAB → RGB)
+```
+
+#### Notes on the weights
+
+- **Raised-cosine** (Hann window): `w(i) = 0.5 * (1 - cos(2π·i/(T-1)))`.
+  Peaks at the tile center, smoothly approaches 0 at the edges.
+- The 2D weight is the **outer product** of two 1D windows. At a pixel
+  covered by multiple overlapping tiles, the sum of all tile weights at
+  that pixel will be approximately constant if `S = T/2` or `S = T/4`.
+- **Why not just average?** Each tile's predictions are less reliable near
+  its edges (the model has less context there). Center-weighted blending
+  trusts the high-confidence interior of each tile.
+
+#### Edge cases to handle
+
+- **Image already smaller than `T`**: skip tiling entirely and just run
+  one inference at the (32-multiple-padded) original size.
+- **Boundary tiles**: reflect-padding (mirrored) gives much better results
+  than zero-padding for natural images. Most image libraries have it.
+- **Output rounding**: per §4.3 the model rounds H/W down to a multiple of
+  32. With tiles of size 512 = 16×32, this is exact. With other tile
+  sizes, ensure your tile size is a multiple of 32.
+
+### 8.5 Two-pass with low-res guidance (best quality, most work)
+
+If the host can afford it, this gives results indistinguishable from a
+single global pass at moderate resolution while supporting locally-detailed
+chroma:
+
+```
+Pass 1 (global, cheap):
+   - Run the simple pipeline §3 at e.g. 512².
+   - You now have a globally-consistent ab_global at full res
+     (or at 512² ready to be upsampled).
+
+Pass 2 (local, per tile):
+   - For each overlapping tile at the desired refinement resolution,
+     build the gray-RGB input.
+   - Before running the model, *blend* the tile's gray RGB with the
+     pass-1 colorized version of the same region, e.g.:
+        cond_rgb = 0.5 * gray_rgb_tile + 0.5 * lab_to_rgb(L_tile, ab_global_tile)
+   - Run model(cond_rgb) → ab_tile_refined.
+   - Compose into ab_full with overlap+feather (§8.4).
+```
+
+The "blend the input with the pass-1 colorization" trick is what lets the
+local pass see the global color decision and refine it instead of starting
+from gray. Without it, you're back in §8.2's "each tile picks its own
+context" problem.
+
+This is more complex; ship §8.4 first.
+
+### 8.6 Performance ballpark
+
+Times below assume the **tiny** model variant on a Blackwell-class GPU
+(RTX 6000 Blackwell, 96 GB) running fp16:
+
+| Resolution | Approach | Inferences | Wall time (estimate) | Notes |
+|---|---|---|---|---|
+| 4K (3840×2160) | Simple pipeline (256²) | 1 | <100 ms | Recommended default |
+| 4K | Simple pipeline (512²) | 1 | ~150 ms | Higher chroma detail |
+| 4K | Direct dynamic-shape ONNX | 1 | ~1.5–3 s | If memory allows, often beats tiling |
+| 4K | Tiling 512² with O=128 (§8.4) | 35 | ~3–4 s | Use when memory-constrained |
+| 4K | Two-pass (§8.5) | 1 + 35 | ~3.5–4 s | Use when colors look wrong at 4K direct |
+
+For the *large* model variant, multiply by ~3–4.
+
+CPU times will be 10–30× slower across the board.
+
+### 8.7 Verifying your tiling implementation
+
+Match these properties:
+
+1. **Tile-grid coverage**: every output pixel must be touched by at least
+   one tile. With `S = T - O` and reflect-padding on the canvas, this is
+   guaranteed.
+2. **Weight normalization**: `weight_sum` must be strictly positive
+   everywhere before division. If you hit a division by zero, your tile
+   stride is too large relative to tile size.
+3. **No seams visible**: rendering the result and comparing against the
+   simple pipeline's output should produce subtly different colors but
+   **no visible grid lines or sudden hue jumps**. If you see seams, increase
+   overlap or check the window function.
+4. **Pixel-budget check**: `pad_H × pad_W * num_tile_origins` should match
+   `T² × num_tile_origins`. Off-by-one errors in the stride loop are the
+   most common bug.
+5. **Spot-check a uniform image**: feed a constant-gray image; every tile
+   should produce the same AB, and after blending the output should be
+   uniform with no banding. If you see banding, the window function is
+   wrong (probably not summing to ~constant over overlapping regions).
+
+---
+
+## 9. File reference (source of truth)
 
 In the coliraz repo:
 
@@ -312,3 +551,8 @@ In the coliraz repo:
 - `src/coliraz/export/onnx.py` — `export_onnx_from_model()` shows
   exactly what's in the graph (no hidden pre/post-processing). Includes
   the dynamic-hw path.
+
+Note: tiling is not currently implemented in the Python reference — §8
+documents the algorithm so the C# port can implement it cleanly without
+needing a Python reference to chase. If you need a Python reference for
+parity, ping the upstream maintainer.
