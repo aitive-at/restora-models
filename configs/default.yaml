@@ -1,0 +1,72 @@
+run:
+  name: "${date:%Y-%m-%d_%H-%M-%S}"
+  output_dir: "runs/${date:%Y-%m-%d_%H-%M-%S}"
+  seed: 0
+
+model:
+  size: tiny
+  input_size: 256
+  num_queries: 100
+  num_scales: 3
+  dec_layers: 9
+  nf: 512
+  hidden_dim: 256
+  refine_norm: spectral
+
+data:
+  val_fraction: 0.01
+  num_fixed_preview_samples: 4
+  num_random_preview_samples: 2
+  augment:
+    hflip: true
+    rotate90: false
+    color_jitter: false
+  loader:
+    batch_size: 32
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+losses: !preset standard
+
+optim_g:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  fused: true
+
+optim_d:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.99]
+  fused: true
+
+scheduler:
+  type: cosine
+  warmup_steps: 2000
+  total_steps: 400000
+
+train:
+  total_steps: 400000
+  amp: bf16
+  memory_format: channels_last
+  compile: false
+  compile_mode: default
+  ema_decay: 0.999
+  grad_accum_steps: 1
+  clip_grad_norm: 1.0
+  preview_every_s: 10.0
+  preview_history_every: 10
+  ckpt_every_steps: 5000
+  val_every_steps: 5000
+  log_every_steps: 25
+  color_enhance: true
+  color_enhance_factor: 1.2
+
+export:
+  on_finish: true
+  opset: 17
+  simplify: true
