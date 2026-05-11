@@ -1,0 +1,44 @@
+# Tiny model for LAION shard (~23K usable images at 256x256).
+# Stable loss preset (Charbonnier + perceptual) — no GAN, no colorfulness artifacts.
+# Tuned for NVIDIA RTX PRO 6000 Blackwell (96 GB).
+defaults: default.yaml
+
+run:
+  name: "laion-tiny-${date:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  size: tiny
+  input_size: 256
+
+data:
+  val_fraction: 0.005       # ~115 val images held out
+  num_fixed_preview_samples: 4
+  num_random_preview_samples: 2
+  loader:
+    # batch 64 keeps the pixel-decoder's 256-ch 256x256 tensor under PyTorch's
+    # 32-bit index limit (2^31 elements) for F.pad with replicate mode.
+    # ~13 GB peak at bf16/channels-last on Blackwell — well within 96 GB.
+    batch_size: 64
+    num_workers: 16
+    prefetch_factor: 4
+
+losses: !preset stable
+
+scheduler:
+  type: cosine
+  warmup_steps: 1000
+  total_steps: 50000
+
+train:
+  total_steps: 50000
+  amp: bf16
+  memory_format: channels_last
+  compile: false            # enable later if you want a ~15% throughput boost
+  ema_decay: 0.999
+  preview_every_s: 10.0
+  preview_history_every: 50  # keep every 50th preview as iter_NNNNN.png
+  ckpt_every_steps: 2500
+  log_every_steps: 25
+
+export:
+  on_finish: true

@@ -228,10 +228,13 @@ class Trainer:
         self.opt_g.zero_grad(set_to_none=True)
         with self._amp_ctx():
             pred_ab = self.model(gray_rgb)
-            pred_lab = torch.cat([L, pred_ab], dim=1)
-            pred_rgb = lab_to_rgb(pred_lab).clamp(0, 1)
-            gt_lab = torch.cat([L, gt_ab], dim=1)
-            gt_rgb = lab_to_rgb(gt_lab).clamp(0, 1)
+            # lab_to_rgb uses pow(x, 1/2.4) which overflows in bf16/fp16 — run in fp32.
+            with torch.amp.autocast(self.device.type, enabled=False):
+                pred_ab_f32 = pred_ab.float()
+                pred_lab = torch.cat([L.float(), pred_ab_f32], dim=1)
+                pred_rgb = lab_to_rgb(pred_lab).clamp(0, 1)
+                gt_lab = torch.cat([L.float(), gt_ab.float()], dim=1)
+                gt_rgb = lab_to_rgb(gt_lab).clamp(0, 1)
             ctx = LossContext(
                 pred_ab=pred_ab,
                 gt_ab=gt_ab,
@@ -241,6 +244,15 @@ class Trainer:
                 discriminator=self.disc,
             )
             total_g, log_g = self.loss_set(ctx)
+            # NaN guard: skip step if loss is NaN/Inf rather than poisoning weights.
+            if not torch.isfinite(total_g):
+                self.opt_g.zero_grad(set_to_none=True)
+                if self.ema is not None:
+                    pass  # don't update EMA on bad step
+                self.scheduler_g.step()
+                self.step += 1
+                self._samples_window += gray_rgb.shape[0]
+                return {"total_g": float(total_g.detach()), **log_g, "_skipped": 1.0}
 
         if self.scaler is not None:
             self.scaler.scale(total_g).backward()

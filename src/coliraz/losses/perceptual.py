@@ -76,15 +76,22 @@ class VGG16BNPerceptualLoss(ColorizationLoss):
         return out
 
     def forward(self, ctx: LossContext) -> torch.Tensor:
-        pred_f = self._features(ctx.pred_rgb)
-        with torch.no_grad():
-            gt_f = self._features(ctx.gt_rgb)
-        perc = 0.0
-        for name, w in self._weights.items():
-            perc = perc + w * self._criterion(pred_f[name], gt_f[name].detach())
-        if self.style_weight > 0:
-            sty = 0.0
+        # VGG cascades overflow bf16/fp16 dynamic range; always run perceptual in fp32.
+        device_type = ctx.pred_rgb.device.type
+        with torch.amp.autocast(device_type, enabled=False):
+            pred_rgb = ctx.pred_rgb.float()
+            gt_rgb = ctx.gt_rgb.float()
+            pred_f = self._features(pred_rgb)
+            with torch.no_grad():
+                gt_f = self._features(gt_rgb)
+            perc: torch.Tensor | float = 0.0
             for name, w in self._weights.items():
-                sty = sty + w * self._criterion(_gram(pred_f[name]), _gram(gt_f[name].detach()))
-            perc = perc + self.style_weight * sty
+                perc = perc + w * self._criterion(pred_f[name], gt_f[name].detach())
+            if self.style_weight > 0:
+                sty: torch.Tensor | float = 0.0
+                for name, w in self._weights.items():
+                    sty = sty + w * self._criterion(
+                        _gram(pred_f[name]), _gram(gt_f[name].detach())
+                    )
+                perc = perc + self.style_weight * sty
         return perc
