@@ -1,6 +1,8 @@
 # Tiny model for LAION shard (~23K usable images at 256x256).
-# Stable loss preset (Charbonnier + perceptual) — no GAN, no colorfulness artifacts.
-# Tuned for NVIDIA RTX PRO 6000 Blackwell (96 GB).
+# Standard loss preset (L1 + perceptual + colorfulness) — colorfulness
+# is required to escape the "predict zero AB" local minimum that
+# pixel+perceptual alone settle into. Tuned for NVIDIA RTX PRO 6000
+# Blackwell (96 GB).
 defaults: default.yaml
 
 run:
@@ -9,9 +11,12 @@ run:
 model:
   size: tiny
   input_size: 256
-  # BatchNorm refine is stable in bf16; spectral_norm's power iteration drifts
-  # in mixed-precision over hundreds of steps and eventually explodes gradients.
-  refine_norm: batch
+  # Spectral refine matches the original DDColor (which trains successfully).
+  # BatchNorm here was a wrong fix — it normalizes output to unit variance,
+  # capping the predicted AB magnitude and causing permanent gray collapse.
+  # The grad-norm guard in the trainer handles bf16 spikes that previously
+  # forced us to switch away from spectral_norm.
+  refine_norm: spectral
 
 data:
   val_fraction: 0.005       # ~115 val images held out
@@ -25,7 +30,7 @@ data:
     num_workers: 16
     prefetch_factor: 4
 
-losses: !preset stable
+losses: !preset standard
 
 scheduler:
   type: cosine
