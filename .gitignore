@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+wheels/
+
+# Virtual env / package mgmt
+.venv/
+.uv/
+
+# Test / lint caches
+.pytest_cache/
+.ruff_cache/
+
+# Coliraz outputs
+runs/
+samples/
+.coliraz-manifest.txt
+*.onnx
+.cache/
