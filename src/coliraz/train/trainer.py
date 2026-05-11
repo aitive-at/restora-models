@@ -199,6 +199,7 @@ class Trainer:
         self._t_window = time.perf_counter()
         self._samples_window = 0
         self._preview_lock = threading.Lock()
+        self._consecutive_nan = 0
 
     # ------------------------------------------------------------------
     # one step (used by tests + main loop)
@@ -247,29 +248,59 @@ class Trainer:
             # NaN guard: skip step if loss is NaN/Inf rather than poisoning weights.
             if not torch.isfinite(total_g):
                 self.opt_g.zero_grad(set_to_none=True)
-                if self.ema is not None:
-                    pass  # don't update EMA on bad step
                 self.scheduler_g.step()
                 self.step += 1
                 self._samples_window += gray_rgb.shape[0]
+                self._consecutive_nan += 1
+                if self._consecutive_nan >= 20:
+                    raise RuntimeError(
+                        f"20 consecutive non-finite losses at step {self.step}. "
+                        "Model weights are likely poisoned. Resume from last.pt "
+                        "and try amp=fp32 or lower lr."
+                    )
                 return {"total_g": float(total_g.detach()), **log_g, "_skipped": 1.0}
 
+        step_skipped = False
         if self.scaler is not None:
             self.scaler.scale(total_g).backward()
             self.scaler.unscale_(self.opt_g)
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.cfg.train.clip_grad_norm
             )
-            self.scaler.step(self.opt_g)
+            if torch.isfinite(grad_norm):
+                self.scaler.step(self.opt_g)
+            else:
+                step_skipped = True
+                self.opt_g.zero_grad(set_to_none=True)
             self.scaler.update()
         else:
             total_g.backward()
-            torch.nn.utils.clip_grad_norm_(
+            grad_norm = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.cfg.train.clip_grad_norm
             )
-            self.opt_g.step()
+            if torch.isfinite(grad_norm):
+                self.opt_g.step()
+            else:
+                step_skipped = True
+                self.opt_g.zero_grad(set_to_none=True)
+        if step_skipped:
+            self._consecutive_nan += 1
+        else:
+            self._consecutive_nan = 0
+        if self._consecutive_nan >= 20:
+            raise RuntimeError(
+                f"20 consecutive non-finite gradient steps at step {self.step}. "
+                "Model weights are likely poisoned. Resume from last.pt and try "
+                "amp=fp32 or lower lr."
+            )
 
-        log: dict[str, float] = {"total_g": float(total_g.detach()), **log_g}
+        log: dict[str, float] = {
+            "total_g": float(total_g.detach()),
+            **log_g,
+            "grad_norm": float(grad_norm),
+        }
+        if step_skipped:
+            log["_skipped_grad"] = 1.0
         if self.disc is not None and self.opt_d is not None:
             self.opt_d.zero_grad(set_to_none=True)
             with self._amp_ctx():

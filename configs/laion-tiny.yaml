@@ -9,6 +9,9 @@ run:
 model:
   size: tiny
   input_size: 256
+  # BatchNorm refine is stable in bf16; spectral_norm's power iteration drifts
+  # in mixed-precision over hundreds of steps and eventually explodes gradients.
+  refine_norm: batch
 
 data:
   val_fraction: 0.005       # ~115 val images held out
