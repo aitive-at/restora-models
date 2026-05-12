@@ -74,10 +74,17 @@ class RecursiveImageDataset(Dataset):
 
         all_paths = build_manifest(self.root)
         kept: list[Path] = []
+        # Reading the full image with cv2.imread just to check shape is
+        # *very* slow on network/Windows-mount filesystems (30K x 30-100ms
+        # = 15-50 min stall at trainer construction). PIL reads only the
+        # file header by default and is 10-50x faster.
+        from PIL import Image
+
         for p in all_paths:
             try:
-                im = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
-                if im is None or im.shape[0] < self.min_side or im.shape[1] < self.min_side:
+                with Image.open(p) as im:
+                    w, h = im.size
+                if h < self.min_side or w < self.min_side:
                     continue
                 kept.append(p)
             except Exception:
