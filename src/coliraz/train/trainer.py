@@ -451,14 +451,25 @@ class Trainer:
             from coliraz.export.onnx import export_onnx_from_model
         except Exception:
             return
-        path = self.output_dir / "model.onnx"
+        export_model = self.ema.module if self.ema is not None else self.model
+        # Fixed-shape export — always produced.
         export_onnx_from_model(
-            self.ema.module if self.ema is not None else self.model,
+            export_model,
             input_size=self.cfg.model.input_size,
-            export_path=path,
+            export_path=self.output_dir / "model.onnx",
             opset=self.cfg.export.opset,
             simplify=self.cfg.export.simplify,
         )
+        # Optional dynamic-H/W export — accepts any (B, 3, H, W) at inference.
+        if self.cfg.export.dynamic_hw:
+            export_onnx_from_model(
+                export_model,
+                input_size=self.cfg.model.input_size,
+                export_path=self.output_dir / "model_dynamic.onnx",
+                opset=self.cfg.export.opset,
+                simplify=self.cfg.export.simplify,
+                dynamic_hw=True,
+            )
 
 
 def fit(cfg: Config, *, device: torch.device | None = None) -> None:

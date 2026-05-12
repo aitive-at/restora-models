@@ -145,6 +145,9 @@ class ExportConfig(BaseModel):
     on_finish: bool = True
     opset: int = 17
     simplify: bool = True
+    # When true, training also emits model_dynamic.onnx with H/W as dynamic
+    # axes in addition to model.onnx (fixed at model.input_size).
+    dynamic_hw: bool = False
 
 
 class RunConfig(BaseModel):
