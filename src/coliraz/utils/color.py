@@ -88,3 +88,24 @@ def derive_gray_rgb_from_rgb(rgb: torch.Tensor) -> torch.Tensor:
     L = lab[:, 0:1]
     gray_lab = torch.cat([L, torch.zeros_like(L), torch.zeros_like(L)], dim=1)
     return lab_to_rgb(gray_lab).clamp(0, 1)
+
+
+def color_enhance_blend(rgb: torch.Tensor, factor: float = 1.2) -> torch.Tensor:
+    """Saturation-boost by linear extrapolation between Rec.601 luma and color.
+
+    out = luma * (1 - factor) + rgb * factor, clamped to [0, 1].
+
+    factor > 1 extrapolates *past* the original color away from gray, boosting
+    saturation. factor = 1 is a no-op; factor < 1 desaturates. The default 1.2
+    matches the original DDColor training recipe.
+
+    Used by the trainer (when train.color_enhance is true) to push the model
+    toward more vivid output: applied to gt_rgb before the perceptual loss,
+    while L1 still sees the original gt_ab — productive tension between
+    "match exactly" and "look more saturated".
+    """
+    if rgb.dim() != 4 or rgb.shape[1] != 3:
+        raise ValueError(f"expected (B, 3, H, W), got {tuple(rgb.shape)}")
+    luma = 0.299 * rgb[:, 0:1] + 0.587 * rgb[:, 1:2] + 0.114 * rgb[:, 2:3]
+    gray = luma.expand_as(rgb)
+    return (gray * (1.0 - factor) + rgb * factor).clamp(0, 1)

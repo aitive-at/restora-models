@@ -18,7 +18,7 @@ from coliraz.losses import LossContext, LossSet
 from coliraz.losses.gan import discriminator_loss
 from coliraz.models import build_ddcolor
 from coliraz.models.discriminator import UNetDiscriminator
-from coliraz.utils.color import lab_to_rgb
+from coliraz.utils.color import color_enhance_blend, lab_to_rgb
 
 from .checkpoint import save_checkpoint
 from .ema import ModelEMA
@@ -236,6 +236,14 @@ class Trainer:
                 pred_rgb = lab_to_rgb(pred_lab).clamp(0, 1)
                 gt_lab = torch.cat([L.float(), gt_ab.float()], dim=1)
                 gt_rgb = lab_to_rgb(gt_lab).clamp(0, 1)
+                # Saturation boost on gt_rgb: pulls perceptual-loss target
+                # toward more vivid colors. L1 still uses original gt_ab, so
+                # the model sees a productive tension between "match exactly"
+                # and "look more saturated".
+                if self.cfg.train.color_enhance:
+                    gt_rgb = color_enhance_blend(
+                        gt_rgb, factor=self.cfg.train.color_enhance_factor
+                    )
             ctx = LossContext(
                 pred_ab=pred_ab,
                 gt_ab=gt_ab,

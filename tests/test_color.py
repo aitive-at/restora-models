@@ -38,3 +38,39 @@ def test_derive_gray_rgb_matches_reference(small_image_uint8):
     t = torch.from_numpy(rgb_f32).permute(2, 0, 1).unsqueeze(0)
     got = derive_gray_rgb_from_rgb(t).squeeze(0).permute(1, 2, 0).numpy()
     np.testing.assert_allclose(got, expected, atol=0.01)
+
+
+def test_color_enhance_blend_factor_one_is_identity(small_image_uint8):
+    from coliraz.utils.color import color_enhance_blend
+
+    rgb_f32 = small_image_uint8.astype(np.float32) / 255.0
+    t = torch.from_numpy(rgb_f32).permute(2, 0, 1).unsqueeze(0)
+    out = color_enhance_blend(t, factor=1.0)
+    np.testing.assert_allclose(out.numpy(), t.numpy(), atol=1e-6)
+
+
+def test_color_enhance_blend_increases_saturation(small_image_uint8):
+    """A saturated input pixel must come out at least as saturated for factor > 1."""
+    from coliraz.utils.color import color_enhance_blend
+
+    # Build a clearly-saturated synthetic image: red and blue stripes.
+    rgb = torch.zeros(1, 3, 4, 4)
+    rgb[0, 0, :, :2] = 0.6  # red on left half
+    rgb[0, 2, :, 2:] = 0.6  # blue on right half
+    out = color_enhance_blend(rgb, factor=1.4)
+
+    def chroma(img):
+        # HSV-like saturation surrogate: max(R,G,B) - min(R,G,B) per pixel.
+        return (img.max(dim=1).values - img.min(dim=1).values).mean()
+
+    assert chroma(out) > chroma(rgb)
+
+
+def test_color_enhance_blend_factor_zero_is_grayscale():
+    from coliraz.utils.color import color_enhance_blend
+
+    rgb = torch.rand(1, 3, 8, 8)
+    out = color_enhance_blend(rgb, factor=0.0)
+    # All three channels should be equal (the luma) after factor=0.
+    np.testing.assert_allclose(out[0, 0].numpy(), out[0, 1].numpy(), atol=1e-6)
+    np.testing.assert_allclose(out[0, 1].numpy(), out[0, 2].numpy(), atol=1e-6)
