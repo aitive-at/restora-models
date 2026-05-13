@@ -14,16 +14,16 @@ from torch.utils.data import DataLoader
 
 from refine.config import Config
 from refine.data.dataset import RecursiveImageDataset
+from refine.data.compound import AXES, CompoundDegradationWrapper, collate_compound
 from refine.data.degradations import colorization as _colorization  # noqa: F401
 from refine.data.degradations import deblur as _deblur  # noqa: F401
 from refine.data.degradations import denoise as _denoise  # noqa: F401
 from refine.data.degradations import jpeg as _jpeg  # noqa: F401
 from refine.data.degradations import superres as _superres  # noqa: F401
 from refine.data.degradations.registry import build_degradation
-from refine.data.multitask import MultiTaskWrapper, collate_multitask
 from refine.losses import LossContext, LossSet
 from refine.losses.gan import discriminator_loss
-from refine.losses.metrics import per_task_average, psnr
+from refine.losses.metrics import psnr
 from refine.models import build_model
 from refine.models.discriminator import UNetDiscriminator
 
@@ -80,23 +80,15 @@ class Trainer:
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.benchmark = True
 
-        # Build degradations + assign task IDs in YAML declaration order
-        deg_items = list(cfg.degradations.items())
-        self.degradations = []
-        self.task_name_to_id: dict[str, int] = {}
-        for i, (name, dcfg) in enumerate(deg_items):
-            kwargs = {k: v for k, v in dcfg.model_dump(exclude_none=True).items() if k != "weight"}
-            deg = build_degradation(name, kwargs)
-            deg.task_id = i
-            self.degradations.append(deg)
-            self.task_name_to_id[name] = i
-        weights = [cfg.degradations[name].weight for name, _ in deg_items]
-        num_tasks = len(self.degradations)
+        # Build compound degradation config
+        axis_probs = cfg.compound.axis_probs.model_dump()
+        deg_params = cfg.compound.degradations.model_dump()
+        identity_prob = cfg.compound.identity_prob
 
         # Model
         self.memory_format = (torch.channels_last if cfg.train.memory_format == "channels_last"
                               else torch.contiguous_format)
-        self.model = build_model(cfg.model, num_tasks=num_tasks).to(
+        self.model = build_model(cfg.model, num_axes=len(AXES)).to(
             self.device, memory_format=self.memory_format)
 
         # Optim + scheduler
@@ -142,7 +134,12 @@ class Trainer:
         )
         if len(clean) == 0:
             raise RuntimeError(f"no images under {cfg.data.root}")
-        train_ds = MultiTaskWrapper(clean, self.degradations, weights, seed=cfg.run.seed)
+        train_ds = CompoundDegradationWrapper(
+            clean, axis_probs=axis_probs,
+            identity_prob=identity_prob,
+            degradation_params=deg_params,
+            seed=cfg.run.seed,
+        )
         bs = cfg.data.loader.batch_size if cfg.data.loader.batch_size != "auto" else 16
         self.train_loader = DataLoader(
             train_ds, batch_size=int(bs), shuffle=True,
@@ -150,7 +147,7 @@ class Trainer:
             pin_memory=cfg.data.loader.pin_memory and self.device.type == "cuda",
             persistent_workers=cfg.data.loader.persistent_workers and cfg.data.loader.num_workers > 0,
             prefetch_factor=cfg.data.loader.prefetch_factor if cfg.data.loader.num_workers > 0 else None,
-            collate_fn=collate_multitask, drop_last=True,
+            collate_fn=collate_compound, drop_last=True,
         )
 
         # Val for preview
@@ -162,7 +159,12 @@ class Trainer:
             )
             if len(clean_val) == 0:
                 clean_val = clean
-            self.val_ds = MultiTaskWrapper(clean_val, self.degradations, weights, seed=cfg.run.seed)
+            self.val_ds = CompoundDegradationWrapper(
+                clean_val, axis_probs=axis_probs,
+                identity_prob=identity_prob,
+                degradation_params=deg_params,
+                seed=cfg.run.seed,
+            )
         else:
             self.val_ds = train_ds
 
@@ -171,7 +173,7 @@ class Trainer:
 
         self.ui = TrainUI(run_name=cfg.run.name or "run",
                           total_steps=cfg.train.total_steps, headless=headless,
-                          task_names=list(self.task_name_to_id.keys()))
+                          task_names=list(AXES))
         self._iter = _cycle(self.train_loader)
         self.step = 0
         self._last_preview_t = 0.0
@@ -191,14 +193,14 @@ class Trainer:
     def _train_step(self, batch: dict) -> dict[str, float]:
         clean = batch["clean"].to(self.device, non_blocking=True, memory_format=self.memory_format)
         degraded = batch["degraded"].to(self.device, non_blocking=True, memory_format=self.memory_format)
-        task_id = batch["task_id"].to(self.device, non_blocking=True)
-        task_names = batch["task_name"]
+        config = batch["config"].to(self.device, non_blocking=True)
+        axes = batch["axes"]
 
         self.opt_g.zero_grad(set_to_none=True)
         with self._amp_ctx():
-            pred = self.model(degraded, task_id)
+            pred = self.model(degraded, config)
             ctx = LossContext(pred_rgb=pred, clean_rgb=clean, degraded_rgb=degraded,
-                              task_ids=task_id, task_names=task_names, discriminator=self.disc)
+                              config=config, axes_active=axes, discriminator=self.disc)
             total_g, log_g = self.loss_set(ctx)
             if not torch.isfinite(total_g):
                 self.opt_g.zero_grad(set_to_none=True)
@@ -246,13 +248,16 @@ class Trainer:
         if step_skipped:
             log["_skipped_grad"] = 1.0
 
+        # Per-axis PSNR
         with torch.no_grad():
             per_sample = psnr(pred, clean)
-            num_tasks = len(self.task_name_to_id)
-            avg = per_task_average(per_sample.cpu(), task_id.cpu(), num_tasks=num_tasks)
-        self._last_per_task_psnr = {
-            name: float(avg[i]) for name, i in self.task_name_to_id.items()
-        }
+            axis_to_idx = {a: i for i, a in enumerate(AXES)}
+            self._last_per_task_psnr = {}
+            for axis in AXES:
+                ax_idx = axis_to_idx[axis]
+                mask = config[:, ax_idx] >= 0.5
+                if mask.any():
+                    self._last_per_task_psnr[axis] = float(per_sample[mask].mean().item())
 
         if self.disc is not None and self.opt_d is not None:
             self.opt_d.zero_grad(set_to_none=True)
@@ -305,26 +310,48 @@ class Trainer:
         was_training = eval_model.training
         eval_model.train(False)
 
-        out: dict[str, list[dict]] = {name: [] for name in self.task_name_to_id}
-        deg_by_name = {d.name: d for d in self.degradations}
+        # 7 rows: identity + 5 single-axis + all-on
+        preview_configs = [
+            ("identity",      [0, 0, 0, 0, 0]),
+            ("colorize-only", [1, 0, 0, 0, 0]),
+            ("denoise-only",  [0, 1, 0, 0, 0]),
+            ("sharpen-only",  [0, 0, 1, 0, 0]),
+            ("dejpeg-only",   [0, 0, 0, 1, 0]),
+            ("deblur-only",   [0, 0, 0, 0, 1]),
+            ("all-on",        [1, 1, 1, 1, 1]),
+        ]
+
+        out: dict[str, list[dict]] = {label: [] for label, _ in preview_configs}
         n_total = len(self.val_ds.clean)
         idxs = list(range(min(n_fixed, n_total)))
         if n_rand > 0 and n_total > len(idxs):
             extra = torch.randint(len(idxs), n_total, (min(n_rand, n_total - len(idxs)),)).tolist()
             idxs += extra
+
         import random as _random
-        for task_name, deg in deg_by_name.items():
+        _DEGRADE_ORDER = ("deblur", "denoise", "sharpen", "dejpeg", "colorize")
+        _AXIS_TO_REG = {
+            "colorize": "colorize", "denoise": "denoise",
+            "sharpen": "sharpen", "dejpeg": "jpeg", "deblur": "deblur",
+        }
+
+        for label, vec in preview_configs:
+            flags = dict(zip(AXES, vec))
             for i in idxs:
                 clean_t = self.val_ds.clean[i]
-                rng = _random.Random((self.cfg.run.seed * 1_000_003) ^ (i + deg.task_id))
-                degraded_np = deg.degrade(clean_t.permute(1, 2, 0).numpy(), rng)
-                degraded_t = torch.from_numpy(degraded_np.transpose(2, 0, 1)).contiguous()
-                pred = eval_model(degraded_t.unsqueeze(0).to(self.device),
-                                  torch.tensor([deg.task_id], dtype=torch.long, device=self.device))
-                out[task_name].append({
+                rng = _random.Random((self.cfg.run.seed * 1_000_003) ^ i)
+                rgb_np = clean_t.permute(1, 2, 0).numpy().copy()
+                for axis in _DEGRADE_ORDER:
+                    if flags[axis]:
+                        rgb_np = self.val_ds.degs[axis].degrade(rgb_np, rng)
+                degraded_t = torch.from_numpy(rgb_np.transpose(2, 0, 1)).contiguous()
+                cfg_t = torch.tensor([vec], dtype=torch.float32, device=self.device)
+                pred = eval_model(degraded_t.unsqueeze(0).to(self.device), cfg_t)
+                out[label].append({
                     "clean": clean_t, "degraded": degraded_t,
                     "predicted": pred.clamp(0, 1).squeeze(0).cpu(),
                 })
+
         if was_training:
             eval_model.train(True)
         return out
@@ -353,12 +380,13 @@ class Trainer:
             self.ui.note_preview(f"wrote {rel} @ step {self.step}")
             self._last_preview_t = time.perf_counter()
 
-    def _task_map(self) -> dict:
+    def _axes_map(self) -> dict:
         return {
-            "tasks": dict(self.task_name_to_id),
-            "input_size": self.cfg.model.input_size,
+            "model_type": "nafnet",
             "model_size": self.cfg.model.size,
-            "version": "0.1.0",
+            "input_size": self.cfg.model.input_size,
+            "config_axes": list(AXES),
+            "version": "0.2.0",
         }
 
     def _save_ckpt(self, name: str) -> None:
@@ -367,7 +395,7 @@ class Trainer:
             model=self.model, optimizer=self.opt_g, optimizer_d=self.opt_d,
             discriminator=self.disc, ema=self.ema, scheduler=self.scheduler_g,
             step=self.step, extra={"cfg": self.cfg.model_dump()},
-            task_map=self._task_map(),
+            task_map=self._axes_map(),
         )
 
     def _maybe_export_onnx(self) -> None:
@@ -377,19 +405,19 @@ class Trainer:
             return
         export_model = self.ema.module if self.ema is not None else self.model
         export_onnx_from_model(
-            export_model, num_tasks=len(self.task_name_to_id),
+            export_model, num_axes=len(AXES),
             input_size=self.cfg.model.input_size,
             export_path=self.output_dir / "model.onnx",
             opset=self.cfg.export.opset, simplify=self.cfg.export.simplify,
-            task_map=self._task_map(),
+            task_map=self._axes_map(),
         )
         if self.cfg.export.dynamic_hw:
             export_onnx_from_model(
-                export_model, num_tasks=len(self.task_name_to_id),
+                export_model, num_axes=len(AXES),
                 input_size=self.cfg.model.input_size,
                 export_path=self.output_dir / "model_dynamic.onnx",
                 opset=self.cfg.export.opset, simplify=self.cfg.export.simplify,
-                dynamic_hw=True, task_map=self._task_map(),
+                dynamic_hw=True, task_map=self._axes_map(),
             )
 
 

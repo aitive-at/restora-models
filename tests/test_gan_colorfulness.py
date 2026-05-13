@@ -11,7 +11,8 @@ def _ctx(disc=None):
     rgb = torch.rand(2, 3, 16, 16, requires_grad=True)
     z = torch.zeros(2, 3, 16, 16)
     return LossContext(pred_rgb=rgb, clean_rgb=z, degraded_rgb=z,
-                       task_ids=torch.tensor([0, 0]), task_names=["x", "x"],
+                       config=torch.zeros(2, 5),
+                       axes_active=["colorize", "colorize"],
                        discriminator=disc), rgb
 
 
@@ -38,6 +39,7 @@ def test_colorfulness_grad():
     rgb = torch.rand(1, 3, 4, 4, requires_grad=True)
     z = torch.zeros(1, 3, 4, 4)
     ctx = LossContext(pred_rgb=rgb, clean_rgb=z, degraded_rgb=z,
-                     task_ids=torch.tensor([0]), task_names=["colorize"])
+                     config=torch.zeros(1, 5),
+                     axes_active=["colorize"])
     ColorfulnessLoss()(ctx).backward()
     assert rgb.grad is not None

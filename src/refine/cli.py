@@ -27,16 +27,21 @@ def scan_data(root: Path = typer.Option(..., "--root", exists=True, file_okay=Fa
     typer.echo(f"{len(paths)} images indexed under {root}")
 
 
-@app.command(name="list-tasks")
-def list_tasks(
-    config: Path = typer.Option(..., "--config", exists=True, dir_okay=False),
-    data: Optional[Path] = typer.Option(None, "--data"),
-) -> None:
-    from refine.config import load_config
-    overrides = {"data": {"root": str(data)}} if data else None
-    cfg = load_config(config, overrides=overrides)
-    for i, (name, dcfg) in enumerate(cfg.degradations.items()):
-        typer.echo(f"  [{i}] {name:12s} weight={dcfg.weight}")
+@app.command()
+def info(model: Path = typer.Option(..., "--model", exists=True, dir_okay=False)) -> None:
+    """Show model metadata (type, axes, input size) from the task-map sidecar."""
+    import json
+    sidecar = model.with_suffix(".task_map.json")
+    if sidecar.exists():
+        typer.echo(sidecar.read_text())
+        return
+    import torch
+    payload = torch.load(str(model), map_location="cpu", weights_only=False)
+    tm = payload.get("task_map")
+    if tm:
+        typer.echo(json.dumps(tm, indent=2))
+    else:
+        typer.echo("no task_map found in checkpoint")
 
 
 @app.command()
@@ -84,17 +89,24 @@ def infer(
     model: Path = typer.Option(..., "--model", exists=True, dir_okay=False),
     input_: Path = typer.Option(..., "--input", "--in", exists=True),
     output: Path = typer.Option(..., "--output", "--out"),
-    task: str = typer.Option(..., "--task"),
+    color: bool = typer.Option(False, "--color/--no-color", help="apply colorize axis"),
+    denoise: bool = typer.Option(False, "--denoise/--no-denoise", help="apply denoise axis"),
+    sharp: bool = typer.Option(False, "--sharp/--no-sharp", help="apply sharpen (SR) axis"),
+    dejpeg: bool = typer.Option(False, "--dejpeg/--no-dejpeg", help="apply JPEG-restore axis"),
+    deblur: bool = typer.Option(False, "--deblur/--no-deblur", help="apply deblur axis"),
     upsample_to: Optional[str] = typer.Option(
         None, "--upsample-to",
-        help="WxH (e.g. 2048x2048) — bicubic upsample input before inference (for SR tasks)"),
+        help="WxH (e.g. 2048x2048) — bicubic pre-upsample before inference"),
 ) -> None:
+    """Colorize / denoise / sharpen / dejpeg / deblur one image or a folder."""
     import cv2
     import torch
     from refine.infer.pipeline import load_pipeline
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = load_pipeline(model, device=device)
+    config = {"colorize": color, "denoise": denoise, "sharpen": sharp,
+              "dejpeg": dejpeg, "deblur": deblur}
 
     def maybe_upsample(img):
         if not upsample_to:
@@ -107,7 +119,7 @@ def infer(
         img = cv2.imread(str(input_))
         if img is None:
             raise typer.BadParameter(f"could not read {input_}")
-        cv2.imwrite(str(output), pipe.process(maybe_upsample(img), task=task))
+        cv2.imwrite(str(output), pipe.process(maybe_upsample(img), config=config))
     else:
         output.mkdir(parents=True, exist_ok=True)
         exts = {".jpg", ".jpeg", ".png", ".webp", ".bmp", ".tif", ".tiff"}
@@ -119,7 +131,7 @@ def infer(
                 continue
             out_path = output / p.relative_to(input_)
             out_path.parent.mkdir(parents=True, exist_ok=True)
-            cv2.imwrite(str(out_path), pipe.process(maybe_upsample(img), task=task))
+            cv2.imwrite(str(out_path), pipe.process(maybe_upsample(img), config=config))
     typer.echo(f"wrote {output}")
 
 
@@ -134,18 +146,18 @@ def export(
 ) -> None:
     import torch
     from refine.config import ModelConfig
+    from refine.data.compound import AXES
     from refine.export.onnx import export_onnx_from_model
     from refine.models import build_model
 
     payload = torch.load(str(model), map_location="cpu", weights_only=False)
     cfg_dict = (payload.get("extra") or {}).get("cfg", {})
     mcfg = ModelConfig(**(cfg_dict.get("model") or {}))
-    task_map = payload.get("task_map") or {}
-    num_tasks = len(task_map.get("tasks") or {"colorize": 0})
-    m = build_model(mcfg, num_tasks=num_tasks)
+    m = build_model(mcfg, num_axes=len(AXES))
     m.load_state_dict(payload["model"])
+    task_map = payload.get("task_map") or {}
     export_onnx_from_model(
-        m, num_tasks=num_tasks, input_size=input_size,
+        m, num_axes=len(AXES), input_size=input_size,
         export_path=output, opset=opset, simplify=simplify,
         dynamic_hw=dynamic_hw, task_map=task_map,
     )

@@ -21,7 +21,7 @@ def register_model(name: str):
     return deco
 
 
-def build_model(cfg: ModelConfig, *, num_tasks: int) -> nn.Module:
+def build_model(cfg: ModelConfig, *, num_axes: int = 5) -> nn.Module:
     if cfg.type not in MODEL_REGISTRY:
         raise KeyError(f"unknown model type {cfg.type!r}; have {sorted(MODEL_REGISTRY)}")
-    return MODEL_REGISTRY[cfg.type](cfg, num_tasks=num_tasks)
+    return MODEL_REGISTRY[cfg.type](cfg, num_axes=num_axes)

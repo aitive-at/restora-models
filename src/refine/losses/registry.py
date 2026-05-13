@@ -10,11 +10,11 @@ from torch import nn
 
 @dataclass
 class LossContext:
-    pred_rgb: torch.Tensor
-    clean_rgb: torch.Tensor
-    degraded_rgb: torch.Tensor
-    task_ids: torch.Tensor
-    task_names: list[str]
+    pred_rgb: torch.Tensor          # (B, 3, H, W)
+    clean_rgb: torch.Tensor         # (B, 3, H, W)
+    degraded_rgb: torch.Tensor      # (B, 3, H, W)
+    config: torch.Tensor            # (B, 5) float — restoration axes
+    axes_active: list[str]          # length B; per-sample label like "color+denoise"
     discriminator: nn.Module | None = None
 
 

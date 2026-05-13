@@ -6,7 +6,8 @@ import pytest
 import torch
 
 from refine.config import (
-    Config, DataConfig, DegradationConfig, ExportConfig, LoaderConfig, LossConfig,
+    AxisProbs, CompoundConfig, CompoundDegradations,
+    Config, DataConfig, ExportConfig, LoaderConfig, LossConfig,
     ModelConfig, OptimConfig, RunConfig, SchedulerConfig, TrainConfig,
 )
 from refine.infer.pipeline import load_pipeline
@@ -33,10 +34,14 @@ def test_train_then_infer_e2e(tmp_path):
                         num_fixed_preview_samples=1, num_random_preview_samples=0,
                         loader=LoaderConfig(batch_size=2, num_workers=0,
                                             persistent_workers=False)),
-        degradations={
-            "colorize": DegradationConfig(weight=1.0),
-            "denoise":  DegradationConfig(weight=1.0, sigma_range=[0.02, 0.05]),
-        },
+        compound=CompoundConfig(
+            identity_prob=0.05,
+            axis_probs=AxisProbs(colorize=0.5, denoise=0.5, sharpen=0.0,
+                                  dejpeg=0.0, deblur=0.0),
+            degradations=CompoundDegradations(
+                denoise={"sigma_range": [0.02, 0.05]},
+            ),
+        ),
         losses=[LossConfig(name="l1_rgb", weight=1.0)],
         optim_g=OptimConfig(lr=1e-3, fused=False),
         scheduler=SchedulerConfig(type="constant", warmup_steps=0, total_steps=5),
@@ -57,5 +62,6 @@ def test_train_then_infer_e2e(tmp_path):
 
     pipe = load_pipeline(final_ckpt, device=torch.device("cpu"))
     img = cv2.imread(str(data_dir / "img0.png"))
-    out = pipe.process(img, task="colorize")
+    out = pipe.process(img, config={"colorize": True, "denoise": False,
+                                    "sharpen": False, "dejpeg": False, "deblur": False})
     assert out.shape == img.shape and out.dtype == np.uint8

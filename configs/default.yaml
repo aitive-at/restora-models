@@ -23,13 +23,20 @@ data:
     persistent_workers: true
     prefetch_factor: 4
 
-degradations:
-  colorize: { weight: 1.0 }
-  denoise:  { weight: 1.0, sigma_range: [0.005, 0.05] }
-  sr_x2:    { weight: 1.0, factor: 2 }
-  sr_x4:    { weight: 1.0, factor: 4 }
-  deblur:   { weight: 0.7, sigma_range: [1.0, 3.0], motion_prob: 0.2 }
-  jpeg:     { weight: 0.7, quality_range: [20, 70] }
+compound:
+  identity_prob: 0.05
+  axis_probs:
+    colorize: 0.5
+    denoise: 0.5
+    sharpen: 0.5
+    dejpeg: 0.5
+    deblur: 0.5
+  degradations:
+    colorize: {}
+    denoise:  { sigma_range: [0.005, 0.05] }
+    sharpen:  { factor_choices: [2, 4, 8] }
+    dejpeg:   { quality_range: [20, 70] }
+    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
 
 losses: !preset standard
 

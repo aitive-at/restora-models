@@ -46,14 +46,31 @@ class DataConfig(BaseModel):
     loader: LoaderConfig = LoaderConfig()
 
 
-# ---------- degradations ---------------------------------------------------
+# ---------- compound degradations -----------------------------------------
 
-class DegradationConfig(BaseModel):
-    """Per-task configuration. Extra keys are passed to the degradation
-    constructor as kwargs (e.g. sigma_range, factor)."""
+class AxisProbs(BaseModel):
+    colorize: float = 0.5
+    denoise: float = 0.5
+    sharpen: float = 0.5
+    dejpeg: float = 0.5
+    deblur: float = 0.5
 
+
+class CompoundDegradations(BaseModel):
+    """Per-axis degradation parameters. Extra fields per-axis allowed for
+    forward compatibility."""
     model_config = {"extra": "allow"}
-    weight: float = 1.0
+    colorize: dict[str, Any] = Field(default_factory=dict)
+    denoise:  dict[str, Any] = Field(default_factory=lambda: {"sigma_range": [0.005, 0.05]})
+    sharpen:  dict[str, Any] = Field(default_factory=lambda: {"factor_choices": [2, 4, 8]})
+    dejpeg:   dict[str, Any] = Field(default_factory=lambda: {"quality_range": [20, 70]})
+    deblur:   dict[str, Any] = Field(default_factory=lambda: {"sigma_range": [1.0, 3.0], "motion_prob": 0.2})
+
+
+class CompoundConfig(BaseModel):
+    identity_prob: float = 0.05
+    axis_probs: AxisProbs = AxisProbs()
+    degradations: CompoundDegradations = CompoundDegradations()
 
 
 # ---------- losses ---------------------------------------------------------
@@ -62,7 +79,7 @@ class LossConfig(BaseModel):
     name: str
     weight: float = 1.0
     config: dict[str, Any] = Field(default_factory=dict)
-    apply_to_tasks: list[str] | None = None
+    apply_to_axes: list[str] | None = None
 
 
 _LOSS_PRESETS: dict[str, list[dict[str, Any]]] = {
@@ -70,22 +87,22 @@ _LOSS_PRESETS: dict[str, list[dict[str, Any]]] = {
     "standard": [
         {"name": "l1_rgb", "weight": 1.0},
         {"name": "perceptual_vgg16bn", "weight": 0.5, "config": {"criterion": "l1"}},
-        {"name": "colorfulness", "weight": 0.3, "apply_to_tasks": ["colorize"]},
-        {"name": "freq_l1", "weight": 0.2, "apply_to_tasks": ["sr_x2", "sr_x4", "deblur"]},
+        {"name": "colorfulness", "weight": 0.3, "apply_to_axes": ["colorize"]},
+        {"name": "freq_l1", "weight": 0.2, "apply_to_axes": ["sharpen", "deblur"]},
     ],
     "vivid": [
         {"name": "l1_rgb", "weight": 1.0},
         {"name": "perceptual_vgg16bn", "weight": 0.5, "config": {"criterion": "l1"}},
-        {"name": "colorfulness", "weight": 2.0, "apply_to_tasks": ["colorize"]},
-        {"name": "freq_l1", "weight": 0.2, "apply_to_tasks": ["sr_x2", "sr_x4", "deblur"]},
+        {"name": "colorfulness", "weight": 2.0, "apply_to_axes": ["colorize"]},
+        {"name": "freq_l1", "weight": 0.2, "apply_to_axes": ["sharpen", "deblur"]},
     ],
     "full": [
         {"name": "l1_rgb", "weight": 1.0},
         {"name": "perceptual_vgg16bn", "weight": 0.5, "config": {"criterion": "l1"}},
-        {"name": "colorfulness", "weight": 0.3, "apply_to_tasks": ["colorize"]},
-        {"name": "freq_l1", "weight": 0.2, "apply_to_tasks": ["sr_x2", "sr_x4", "deblur"]},
+        {"name": "colorfulness", "weight": 0.3, "apply_to_axes": ["colorize"]},
+        {"name": "freq_l1", "weight": 0.2, "apply_to_axes": ["sharpen", "deblur"]},
         {"name": "gan", "weight": 0.1, "config": {"gan_type": "hinge"},
-         "apply_to_tasks": ["colorize", "sr_x2", "sr_x4"]},
+         "apply_to_axes": ["colorize", "sharpen"]},
     ],
 }
 
@@ -149,7 +166,7 @@ class Config(BaseModel):
     run: RunConfig = RunConfig()
     model: ModelConfig = ModelConfig()
     data: DataConfig
-    degradations: dict[str, DegradationConfig]
+    compound: CompoundConfig = CompoundConfig()
     losses: list[LossConfig]
     optim_g: OptimConfig = OptimConfig()
     optim_d: OptimConfig = OptimConfig(weight_decay=0.0)

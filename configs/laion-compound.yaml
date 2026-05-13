@@ -1,6 +1,6 @@
 defaults: large.yaml
 run:
-  name: "laion-multitask-${date:%Y-%m-%d_%H-%M-%S}"
+  name: "laion-compound-${date:%Y-%m-%d_%H-%M-%S}"
 data:
   val_fraction: 0.005
   num_fixed_preview_samples: 1

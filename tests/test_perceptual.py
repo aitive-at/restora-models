@@ -26,6 +26,7 @@ def test_perceptual_loss_grad_flows():
     gt = torch.randn(1, 3, 16, 16)
     z = torch.zeros(1, 3, 16, 16)
     ctx = LossContext(pred_rgb=pred, clean_rgb=gt, degraded_rgb=z,
-                      task_ids=torch.tensor([0]), task_names=["x"])
+                      config=torch.zeros(1, 5),
+                      axes_active=["denoise"])
     loss(ctx).backward()
     assert pred.grad is not None and pred.grad.abs().sum() > 0

@@ -1,4 +1,4 @@
-"""NAFNet multi-task model."""
+"""NAFNet compound model."""
 from __future__ import annotations
 
 import torch
@@ -8,7 +8,7 @@ from refine.config import ModelConfig
 from .color import LabToRgb, RgbToLab
 from .nafblock import NAFBlock
 from .registry import register_model
-from .task_embed import TaskEmbed
+from .task_embed import ConfigEmbed
 from .transformer_block import TransformerBlock
 
 
@@ -31,7 +31,7 @@ def _resolve(cfg: ModelConfig) -> dict:
 
 @register_model("nafnet")
 class NAFNetMultiTask(nn.Module):
-    def __init__(self, cfg: ModelConfig, *, num_tasks: int) -> None:
+    def __init__(self, cfg: ModelConfig, *, num_axes: int = 5) -> None:
         super().__init__()
         p = _resolve(cfg)
         nf = p["nf"]; depths = p["enc_depths"]; bottle_n = p["bottle_blocks"]
@@ -40,7 +40,7 @@ class NAFNetMultiTask(nn.Module):
 
         self.rgb_to_lab = RgbToLab()
         self.lab_to_rgb = LabToRgb()
-        self.task_embed = TaskEmbed(num_tasks=num_tasks, dim=task_dim)
+        self.task_embed = ConfigEmbed(num_axes=num_axes, dim=task_dim)
 
         self.stem = nn.Conv2d(3, nf, kernel_size=3, padding=1)
 
@@ -78,9 +78,9 @@ class NAFNetMultiTask(nn.Module):
         if self.head.bias is not None:
             nn.init.zeros_(self.head.bias)
 
-    def forward(self, rgb: torch.Tensor, task: torch.Tensor) -> torch.Tensor:
+    def forward(self, rgb: torch.Tensor, config: torch.Tensor) -> torch.Tensor:
         lab_n = self.rgb_to_lab(rgb)
-        task_vec = self.task_embed(task)
+        task_vec = self.task_embed(config)
 
         x = self.stem(lab_n)
         skips: list[torch.Tensor] = []

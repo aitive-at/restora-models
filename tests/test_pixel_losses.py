@@ -10,8 +10,8 @@ def _ctx(pred=None, clean=None):
         pred_rgb=pred if pred is not None else z.clone(),
         clean_rgb=clean if clean is not None else z.clone(),
         degraded_rgb=z.clone(),
-        task_ids=torch.tensor([0, 0]),
-        task_names=["colorize", "colorize"],
+        config=torch.zeros(2, 5),
+        axes_active=["colorize", "colorize"],
     )
 
 

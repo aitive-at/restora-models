@@ -16,15 +16,13 @@ def rgb_in():
 @pytest.mark.parametrize("name,cfg", [
     ("colorize", {}),
     ("denoise",  {"sigma_range": [0.01, 0.05]}),
-    ("sr_x2",    {"factor": 2}),
-    ("sr_x4",    {"factor": 4}),
+    ("sharpen",  {"factor_choices": [2, 4]}),
     ("deblur",   {"sigma_range": [1.0, 2.0], "motion_prob": 0.0}),
     ("jpeg",     {"quality_range": [40, 60]}),
 ])
 def test_degradation_preserves_shape_and_dtype(name, cfg, rgb_in):
     d_cls = DEGRADATION_REGISTRY[name]
-    d_cfg = dict(cfg); d_cfg.pop("weight", None)
-    d = d_cls(**d_cfg)
+    d = d_cls(**cfg)
     rng = random.Random(0)
     out = d.degrade(rgb_in.copy(), rng)
     assert out.shape == rgb_in.shape
@@ -49,8 +47,8 @@ def test_denoise_adds_noise(rgb_in):
     assert (out - rgb_in).std() > 0.01
 
 
-def test_sr_x4_actually_loses_detail(rgb_in):
-    d = DEGRADATION_REGISTRY["sr_x4"](factor=4)
+def test_sharpen_loses_detail(rgb_in):
+    d = DEGRADATION_REGISTRY["sharpen"](factor_choices=[4])
     out = d.degrade(rgb_in.copy(), random.Random(0))
     grad_in = np.abs(np.diff(rgb_in, axis=0)).mean()
     grad_out = np.abs(np.diff(out, axis=0)).mean()

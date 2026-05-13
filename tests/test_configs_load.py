@@ -15,7 +15,8 @@ def test_large_yaml_loads():
     assert cfg.model.size == "large"
 
 
-def test_laion_multitask_loads():
-    cfg = load_config(ROOT / "laion-multitask.yaml", overrides={"data": {"root": "/tmp"}})
-    assert "colorize" in cfg.degradations
-    assert "sr_x4" in cfg.degradations
+def test_laion_compound_loads():
+    cfg = load_config(ROOT / "laion-compound.yaml", overrides={"data": {"root": "/tmp"}})
+    assert cfg.compound.identity_prob == 0.05
+    assert cfg.compound.axis_probs.colorize == 0.5
+    assert cfg.compound.axis_probs.sharpen == 0.5

@@ -1,20 +1,19 @@
-"""Task embedding + MLP, used to condition NAFBlocks (FiLM) and the
-bottleneck transformer (AdaLN)."""
+"""Conditioning embedding: turns a (B, num_axes) float vector into a
+(B, dim) task vector for FiLM/AdaLN modulation throughout the model."""
 from __future__ import annotations
 
 import torch
 from torch import nn
 
 
-class TaskEmbed(nn.Module):
-    def __init__(self, *, num_tasks: int, dim: int = 128) -> None:
+class ConfigEmbed(nn.Module):
+    def __init__(self, *, num_axes: int = 5, dim: int = 128) -> None:
         super().__init__()
-        self.embed = nn.Embedding(num_tasks, dim)
+        self.proj = nn.Linear(num_axes, dim)
         self.mlp = nn.Sequential(
-            nn.Linear(dim, dim),
             nn.SiLU(inplace=True),
             nn.Linear(dim, dim),
         )
 
-    def forward(self, task: torch.Tensor) -> torch.Tensor:
-        return self.mlp(self.embed(task))
+    def forward(self, config: torch.Tensor) -> torch.Tensor:
+        return self.mlp(self.proj(config))
