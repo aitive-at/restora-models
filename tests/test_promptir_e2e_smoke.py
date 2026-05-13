@@ -56,12 +56,10 @@ def test_promptir_full_pipeline(tmp_path, tmp_image_dir):
 
     import json
     sidecar = final.with_suffix(".task_map.json")
-    if sidecar.exists():
-        tm = json.loads(sidecar.read_text())
-        # trainer currently hardcodes "nafnet" in _axes_map; only assert when
-        # the sidecar reflects the actual model type for this checkpoint.
-        if "model_type" in tm and tm["model_type"] == "promptir":
-            assert tm["model_type"] == "promptir"
+    assert sidecar.exists(), "task_map sidecar not written"
+    tm = json.loads(sidecar.read_text())
+    assert tm["model_type"] == "promptir", \
+        f"sidecar should reflect actual model type; got {tm.get('model_type')!r}"
 
     from refine.export.onnx import export_onnx_from_model
     from refine.models import build_model

@@ -397,7 +397,7 @@ class Trainer:
 
     def _axes_map(self) -> dict:
         return {
-            "model_type": "nafnet",
+            "model_type": self.cfg.model.type,
             "model_size": self.cfg.model.size,
             "input_size": self.cfg.model.input_size,
             "config_axes": list(AXES),
