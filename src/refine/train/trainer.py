@@ -310,18 +310,21 @@ class Trainer:
         was_training = eval_model.training
         eval_model.train(False)
 
-        # 7 rows: identity + 5 single-axis + all-on
-        preview_configs = [
-            ("identity",      [0, 0, 0, 0, 0]),
-            ("colorize-only", [1, 0, 0, 0, 0]),
-            ("denoise-only",  [0, 1, 0, 0, 0]),
-            ("sharpen-only",  [0, 0, 1, 0, 0]),
-            ("dejpeg-only",   [0, 0, 0, 1, 0]),
-            ("deblur-only",   [0, 0, 0, 0, 1]),
-            ("all-on",        [1, 1, 1, 1, 1]),
+        # 9 rows: identity + colorize + denoise + 3x sharpen + dejpeg + deblur + all-on.
+        # The three sharpen rows force SR factors 2 / 4 / 8 so users see each scale.
+        preview_configs: list[tuple[str, list[int], dict]] = [
+            ("identity",      [0, 0, 0, 0, 0], {}),
+            ("colorize-only", [1, 0, 0, 0, 0], {}),
+            ("denoise-only",  [0, 1, 0, 0, 0], {}),
+            ("sharpen-2x",    [0, 0, 1, 0, 0], {"sharpen_factor": 2}),
+            ("sharpen-4x",    [0, 0, 1, 0, 0], {"sharpen_factor": 4}),
+            ("sharpen-8x",    [0, 0, 1, 0, 0], {"sharpen_factor": 8}),
+            ("dejpeg-only",   [0, 0, 0, 1, 0], {}),
+            ("deblur-only",   [0, 0, 0, 0, 1], {}),
+            ("all-on",        [1, 1, 1, 1, 1], {}),
         ]
 
-        out: dict[str, list[dict]] = {label: [] for label, _ in preview_configs}
+        out: dict[str, list[dict]] = {label: [] for label, _, _ in preview_configs}
         n_total = len(self.val_ds.clean)
         idxs = list(range(min(n_fixed, n_total)))
         if n_rand > 0 and n_total > len(idxs):
@@ -329,21 +332,33 @@ class Trainer:
             idxs += extra
 
         import random as _random
+        from refine.data.degradations.registry import build_degradation
         _DEGRADE_ORDER = ("deblur", "denoise", "sharpen", "dejpeg", "colorize")
         _AXIS_TO_REG = {
             "colorize": "colorize", "denoise": "denoise",
             "sharpen": "sharpen", "dejpeg": "jpeg", "deblur": "deblur",
         }
 
-        for label, vec in preview_configs:
+        for label, vec, opts in preview_configs:
             flags = dict(zip(AXES, vec))
+            # When we want a fixed SR factor, build a dedicated SharpenDegradation
+            # with single-element factor_choices and use it in place of the
+            # dataset's stochastic one for this row only.
+            sharpen_override = None
+            if "sharpen_factor" in opts:
+                sharpen_override = build_degradation(
+                    "sharpen", {"factor_choices": [int(opts["sharpen_factor"])]}
+                )
+
             for i in idxs:
                 clean_t = self.val_ds.clean[i]
                 rng = _random.Random((self.cfg.run.seed * 1_000_003) ^ i)
                 rgb_np = clean_t.permute(1, 2, 0).numpy().copy()
                 for axis in _DEGRADE_ORDER:
                     if flags[axis]:
-                        rgb_np = self.val_ds.degs[axis].degrade(rgb_np, rng)
+                        deg = sharpen_override if (axis == "sharpen" and sharpen_override is not None) \
+                              else self.val_ds.degs[axis]
+                        rgb_np = deg.degrade(rgb_np, rng)
                 degraded_t = torch.from_numpy(rgb_np.transpose(2, 0, 1)).contiguous()
                 cfg_t = torch.tensor([vec], dtype=torch.float32, device=self.device)
                 pred = eval_model(degraded_t.unsqueeze(0).to(self.device), cfg_t)
