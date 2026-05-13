@@ -14,9 +14,10 @@ wheels/
 .pytest_cache/
 .ruff_cache/
 
-# Coliraz outputs
+# Refine outputs
 runs/
 samples/
+.refine-manifest.txt
 .coliraz-manifest.txt
 *.onnx
 .cache/

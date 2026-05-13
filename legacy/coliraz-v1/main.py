@@ -1,5 +1,5 @@
 """Thin entry point — delegates to the Typer CLI."""
-from refine.cli import app
+from coliraz.cli import app
 
 if __name__ == "__main__":
     app()

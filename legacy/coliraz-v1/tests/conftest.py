@@ -6,7 +6,7 @@ import pytest
 
 @pytest.fixture
 def tmp_image_dir(tmp_path: pathlib.Path) -> pathlib.Path:
-    """tmp dir with 6 small synthetic RGB images in a nested tree."""
+    """A tmp directory containing 6 small synthetic RGB images in a nested tree."""
     import cv2
 
     (tmp_path / "a").mkdir()

@@ -1,15 +1,16 @@
-# coliraz
+# refine
 
-Modern PyTorch port of DDColor (ICCV 2023) for image colorization.
-Single CLI for training (with live UI + periodic sample previews),
-inference, and ONNX export. Managed with `uv`.
+Multi-task image restoration: one model trained jointly on colorization,
+super-resolution, denoising, deblurring, and JPEG-artifact removal.
 
 ## Quick start
 
-```bash
+```sh
 uv sync
-uv run coliraz scan-data --root /path/to/images
-uv run coliraz train --config configs/tiny.yaml --data /path/to/images
+uv run refine scan-data --root /path/to/images
+uv run refine train --config configs/laion-multitask.yaml --data /path/to/images
 ```
 
-See `docs/superpowers/specs/2026-05-11-coliraz-modern-port-design.md` for the design.
+See `docs/superpowers/specs/2026-05-13-refine-multitask-design.md` for the design.
+
+The previous colorization-only project lives in `legacy/coliraz-v1/`.
