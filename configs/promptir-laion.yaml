@@ -1,0 +1,60 @@
+defaults: default.yaml
+
+run:
+  name: "promptir-large-laion-${date:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  type: promptir
+  size: large
+  input_size: 256
+  task_embed_dim: 128
+
+data:
+  root: "~/data/laion-images"
+  val_fraction: 0.005
+  num_fixed_preview_samples: 1
+  num_random_preview_samples: 1
+  loader:
+    batch_size: 8
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+compound:
+  identity_prob: 0.05
+  axis_probs:
+    colorize: 0.5
+    denoise:  0.5
+    sharpen:  0.5
+    dejpeg:   0.5
+    deblur:   0.5
+  degradations:
+    colorize: {}
+    denoise:  { sigma_range: [0.005, 0.05] }
+    sharpen:  { factor_choices: [2, 4, 8] }
+    dejpeg:   { quality_range: [20, 70] }
+    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
+
+losses: !preset standard
+
+optim_g:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  fused: true
+
+scheduler:
+  type: cosine
+  warmup_steps: 3000
+  total_steps: 200000
+
+train:
+  total_steps: 200000
+  amp: "bf16"
+  preview_every_s: 60
+  preview_history_every: 1000
+
+export:
+  on_finish: true
