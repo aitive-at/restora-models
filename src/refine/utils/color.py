@@ -34,14 +34,14 @@ def _srgb_to_linear(c: torch.Tensor) -> torch.Tensor:
 def _linear_to_srgb(c: torch.Tensor) -> torch.Tensor:
     threshold = 0.0031308
     return torch.where(
-        c <= threshold, c * 12.92, 1.055 * c.clamp(min=0).pow(1 / 2.4) - 0.055
+        c <= threshold, c * 12.92, 1.055 * c.clamp(min=1e-8).pow(1 / 2.4) - 0.055
     )
 
 
 def _f_lab(t: torch.Tensor) -> torch.Tensor:
     delta = 6.0 / 29.0
     return torch.where(
-        t > delta**3, t.clamp(min=0).pow(1.0 / 3.0), t / (3 * delta**2) + 4.0 / 29.0
+        t > delta**3, t.clamp(min=1e-8).pow(1.0 / 3.0), t / (3 * delta**2) + 4.0 / 29.0
     )
 
 
