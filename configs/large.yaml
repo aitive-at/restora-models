@@ -1,0 +1,8 @@
+defaults: default.yaml
+model:
+  size: large
+data:
+  loader:
+    batch_size: 12
+scheduler:
+  warmup_steps: 3000
