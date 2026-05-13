@@ -32,3 +32,33 @@ def test_ckpt_with_task_map(tmp_path):
     assert payload["step"] == 10
     for p, q in zip(m.parameters(), m2.parameters()):
         assert torch.equal(p.data, q.data)
+
+
+def test_ema_works_with_torch_compile():
+    """Regression: torch.compile wraps the model in OptimizedModule whose
+    state_dict prefixes keys with '_orig_mod.'. EMA must unwrap before
+    looking up parameters or it raises KeyError."""
+    m = nn.Linear(4, 2)
+    ema = ModelEMA(m, decay=0.9)
+    # Simulate the trainer's order: build EMA, THEN compile the model.
+    try:
+        compiled = torch.compile(m)
+    except Exception:
+        import pytest
+        pytest.skip("torch.compile unavailable in this environment")
+    # The compiled module's state_dict has '_orig_mod.' prefixes.
+    assert any(k.startswith("_orig_mod.") for k in compiled.state_dict()), \
+        "compile didn't add the expected prefix — test premise broken"
+    # EMA.update must still work — this is the failing path from the bug report.
+    ema.update(compiled)
+    # And the saved checkpoint state_dict must have bare keys (so it loads
+    # back into either a compiled or non-compiled model).
+    from refine.train.checkpoint import save_checkpoint
+    import tempfile
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as td:
+        path = Path(td) / "ckpt.pt"
+        save_checkpoint(path, model=compiled, step=1)
+        payload = torch.load(path, map_location="cpu", weights_only=False)
+        assert all(not k.startswith("_orig_mod.") for k in payload["model"]), \
+            "saved checkpoint has _orig_mod. keys — won't load on non-compiled model"

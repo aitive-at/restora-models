@@ -9,6 +9,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from .ema import _unwrap
+
 
 def save_checkpoint(
     path: str | Path, *,
@@ -24,7 +26,7 @@ def save_checkpoint(
 ) -> None:
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    payload: dict[str, Any] = {"model": model.state_dict(), "step": step, "extra": extra or {}}
+    payload: dict[str, Any] = {"model": _unwrap(model).state_dict(), "step": step, "extra": extra or {}}
     if optimizer is not None:
         payload["optimizer"] = optimizer.state_dict()
     if optimizer_d is not None:
@@ -61,7 +63,7 @@ def load_checkpoint(
 ) -> dict[str, Any]:
     payload = torch.load(path, map_location=map_location, weights_only=False)
     if model is not None and "model" in payload:
-        model.load_state_dict(payload["model"])
+        _unwrap(model).load_state_dict(payload["model"])
     if optimizer is not None and "optimizer" in payload:
         optimizer.load_state_dict(payload["optimizer"])
     if optimizer_d is not None and "optimizer_d" in payload:
