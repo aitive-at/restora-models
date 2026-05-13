@@ -20,6 +20,10 @@ class ModelConfig(BaseModel):
     bottle_blocks: int | None = None
     hidden_dim: int | None = None
     task_embed_dim: int = 128
+    # PromptIR-specific overrides (ignored when type != "promptir"):
+    prompt_n: int | None = None
+    prompt_dim: int | None = None
+    prompt_hw: int | None = None
 
 
 # ---------- data -----------------------------------------------------------
