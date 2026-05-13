@@ -143,6 +143,8 @@ def export(
     opset: int = typer.Option(17, "--opset"),
     simplify: bool = typer.Option(True, "--simplify/--no-simplify"),
     dynamic_hw: bool = typer.Option(False, "--dynamic-hw/--fixed-hw"),
+    precision: str = typer.Option("fp32", "--precision",
+                                  help="fp32 (default) | fp16 | fp8 | fp4"),
 ) -> None:
     import torch
     from refine.config import ModelConfig
@@ -156,9 +158,10 @@ def export(
     m = build_model(mcfg, num_axes=len(AXES))
     m.load_state_dict(payload["model"])
     task_map = payload.get("task_map") or {}
+    effective_opset = max(opset, 19) if precision == "fp8" else opset
     export_onnx_from_model(
         m, num_axes=len(AXES), input_size=input_size,
-        export_path=output, opset=opset, simplify=simplify,
-        dynamic_hw=dynamic_hw, task_map=task_map,
+        export_path=output, opset=effective_opset, simplify=simplify,
+        dynamic_hw=dynamic_hw, task_map=task_map, precision=precision,
     )
-    typer.echo(f"wrote {output}")
+    typer.echo(f"wrote {output} ({precision})")
