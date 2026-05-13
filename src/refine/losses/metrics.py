@@ -1,4 +1,4 @@
-"""Per-sample PSNR / SSIM (no grad) + per-task averaging helper."""
+"""Per-sample PSNR / SSIM (no grad)."""
 from __future__ import annotations
 
 import torch
@@ -38,12 +38,3 @@ def ssim(pred: torch.Tensor, clean: torch.Tensor, max_val: float = 1.0) -> torch
     num = (2 * mu_xy + c1) * (2 * sigma_xy + c2)
     den = (mu_x2 + mu_y2 + c1) * (sigma_x2 + sigma_y2 + c2)
     return (num / den).mean(dim=(1, 2, 3))
-
-
-def per_task_average(values: torch.Tensor, task_ids: torch.Tensor, num_tasks: int) -> torch.Tensor:
-    out = torch.full((num_tasks,), float("nan"), dtype=torch.float32)
-    for t in range(num_tasks):
-        mask = task_ids == t
-        if mask.any():
-            out[t] = values[mask].float().mean().item()
-    return out

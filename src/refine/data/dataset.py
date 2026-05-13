@@ -1,7 +1,7 @@
 """Recursive image dataset with manifest cache and deterministic train/val split.
 
 Returns *clean* (3, H, W) float32 RGB. Degradation lives outside the dataset
-(see refine.data.multitask.MultiTaskWrapper).
+(see refine.data.compound.CompoundDegradationWrapper).
 """
 from __future__ import annotations
 

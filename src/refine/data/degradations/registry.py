@@ -11,7 +11,6 @@ import numpy as np
 
 class Degradation(ABC):
     name: str = ""
-    task_id: int = -1  # assigned by config at startup
 
     @abstractmethod
     def degrade(self, rgb: np.ndarray, rng: random.Random) -> np.ndarray:

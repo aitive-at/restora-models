@@ -1,6 +1,6 @@
 import torch
 
-from refine.losses.metrics import psnr, ssim, per_task_average
+from refine.losses.metrics import psnr, ssim
 
 
 def test_psnr_identical_is_inf():
@@ -20,10 +20,3 @@ def test_ssim_shape():
     s = ssim(a, b)
     assert s.shape == (2,)
     assert (s >= -1.0).all() and (s <= 1.0).all()
-
-
-def test_per_task_average():
-    values = torch.tensor([10.0, 20.0, 30.0, 40.0])
-    task_ids = torch.tensor([0, 1, 0, 1])
-    out = per_task_average(values, task_ids, num_tasks=2)
-    assert out.tolist() == [20.0, 30.0]
