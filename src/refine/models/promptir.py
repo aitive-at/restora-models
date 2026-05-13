@@ -103,10 +103,10 @@ class PromptIR(nn.Module):
 
         self.refinement = _stack(dim, ref_n, heads[0], task_dim)
 
+        # Output head: small normal init so initial output ≈ rgb (via global residual),
+        # but non-zero so configs route to materially different outputs at step 0.
         self.head = nn.Conv2d(dim, 3, kernel_size=3, padding=1)
-        # Default Kaiming init for the head produces a near-identity residual
-        # at step 0 while still carrying the prompt-router signal end-to-end,
-        # so config conditioning is observable from the very first forward.
+        nn.init.normal_(self.head.weight, mean=0.0, std=0.01)
         if self.head.bias is not None:
             nn.init.zeros_(self.head.bias)
 
