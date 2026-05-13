@@ -5,6 +5,7 @@ import torch
 
 from refine.config import LossConfig
 
+from . import chroma as _chroma  # noqa: F401
 from . import colorfulness as _colorfulness  # noqa: F401
 from . import freq as _freq  # noqa: F401
 from . import gan as _gan  # noqa: F401
