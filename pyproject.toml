@@ -43,3 +43,25 @@ packages = ["src/restora_models"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra -q"
+
+# Pin torch / torchvision to PyTorch's cu128 wheel index so installs
+# work on machines whose NVIDIA driver supports CUDA up to 12.8 (e.g.
+# our H200 target box with driver 570.211.01 / CUDA-runtime 12.8).
+#
+# By default PyPI ships torch built against the latest CUDA, which
+# requires a newer driver than older machines have. The "RuntimeError:
+# NVIDIA driver too old" message is misleading — it's actually a
+# torch-cuda-runtime mismatch, not a driver issue.
+#
+# If your driver supports CUDA >= 12.9, you can remove this pin to
+# get the newest stack. For driver-bound CUDA <= 12.6, change cu128 ->
+# cu126 in BOTH the index URL and the source name. cu128 wheels exist
+# for torch 2.5+; for older torch use cu126 or cu124.
+[tool.uv.sources]
+torch = { index = "pytorch-cu128" }
+torchvision = { index = "pytorch-cu128" }
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

@@ -32,14 +32,25 @@ uv run python -c "import torch; print('cuda:', torch.cuda.is_available(), '-', t
 # Expected: cuda: True - NVIDIA H200 ...
 ```
 
-If `cuda: False` here, fix it before going further (torch CPU-only wheel got
-installed). Force the CUDA build:
+`uv sync` should pull torch built for CUDA 12.8 (matches H200 driver
+570.211.01); the cu128 wheel pin is in `pyproject.toml` under
+`[tool.uv.sources]`. You should NOT need to manually install torch.
+
+**If you see `RuntimeError: NVIDIA driver too old (found version 12080)`:**
+that's a misleading PyTorch message — it actually means the installed
+torch wheel was built against a CUDA newer than your driver supports,
+not that the driver is too old. Verify with:
 
 ```sh
-uv pip install --force-reinstall \
-  --index-url https://download.pytorch.org/whl/cu126 \
-  torch torchvision
+uv run python -c "import torch; print('torch.version.cuda =', torch.version.cuda)"
+# Should print: torch.version.cuda = 12.8
+# If it prints 12.9 or 13.x, the cu128 pin didn't take. Re-run:
+uv lock --upgrade && uv sync
 ```
+
+For driver-bound CUDA <= 12.6 (older boxes), edit `pyproject.toml`
+`[tool.uv.sources]` to point at `cu126` instead of `cu128`, then
+`uv lock && uv sync`.
 
 ## 2. HuggingFace auth
 
