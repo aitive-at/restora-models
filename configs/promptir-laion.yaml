@@ -24,11 +24,11 @@ data:
 compound:
   identity_prob: 0.05
   axis_probs:
-    colorize: 0.75
-    denoise:  0.40
-    sharpen:  0.75
-    dejpeg:   0.40
-    deblur:   0.40
+    colorize: 0.50
+    denoise:  0.50
+    sharpen:  0.50
+    dejpeg:   0.50
+    deblur:   0.50
   degradations:
     colorize: {}
     denoise:  { sigma_range: [0.005, 0.05] }

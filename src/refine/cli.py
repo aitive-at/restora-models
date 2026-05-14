@@ -135,6 +135,16 @@ def infer(
     typer.echo(f"wrote {output}")
 
 
+_TASK_CONFIGS: dict[str, list[float]] = {
+    "colorize": [1.0, 0.0, 0.0, 0.0, 0.0],
+    "denoise":  [0.0, 1.0, 0.0, 0.0, 0.0],
+    "sharpen":  [0.0, 0.0, 1.0, 0.0, 0.0],
+    "dejpeg":   [0.0, 0.0, 0.0, 1.0, 0.0],
+    "deblur":   [0.0, 0.0, 0.0, 0.0, 1.0],
+    "all":      [1.0, 1.0, 1.0, 1.0, 1.0],
+}
+
+
 @app.command()
 def export(
     model: Path = typer.Option(..., "--model", exists=True, dir_okay=False),
@@ -145,12 +155,51 @@ def export(
     dynamic_hw: bool = typer.Option(False, "--dynamic-hw/--fixed-hw"),
     precision: str = typer.Option("fp32", "--precision",
                                   help="fp32 (default) | fp16 | fp8 | fp4"),
+    task: Optional[str] = typer.Option(
+        None, "--task",
+        help="Bake a specific task's config into the ONNX (resulting graph "
+             "has ONLY 'input' tensor, no 'config'). Options: colorize | "
+             "denoise | sharpen | dejpeg | deblur | all"),
+    bake_axes: Optional[str] = typer.Option(
+        None, "--bake-axes",
+        help="Comma-separated 5-axis vector to bake into the ONNX, e.g. "
+             "'1,0,1,0,0' for colorize+sharpen. Mutually exclusive with --task."),
 ) -> None:
+    """Export a trained refine checkpoint to ONNX.
+
+    Default export emits a 2-input ONNX (input, config) -> output that
+    works for any of the 5 restoration axes by setting the config vector.
+
+    Pass --task NAME or --bake-axes V1,V2,V3,V4,V5 to emit a per-task
+    ONNX with the config tensor BAKED in as a buffer; that resulting
+    file has only an `input` tensor — "RGB in, RGB out" — and is what
+    deployment consumers usually want."""
     import torch
     from refine.config import ModelConfig
     from refine.data.compound import AXES
     from refine.export.onnx import export_onnx_from_model
     from refine.models import build_model
+
+    if task is not None and bake_axes is not None:
+        raise typer.BadParameter("--task and --bake-axes are mutually exclusive")
+    fixed_config: list[float] | None = None
+    if task is not None:
+        if task not in _TASK_CONFIGS:
+            raise typer.BadParameter(
+                f"unknown task {task!r}; options: {sorted(_TASK_CONFIGS)}"
+            )
+        fixed_config = list(_TASK_CONFIGS[task])
+    elif bake_axes is not None:
+        try:
+            fixed_config = [float(x) for x in bake_axes.split(",")]
+        except ValueError as e:
+            raise typer.BadParameter(
+                f"--bake-axes must be comma-separated floats: {e}"
+            ) from e
+        if len(fixed_config) != len(AXES):
+            raise typer.BadParameter(
+                f"--bake-axes needs {len(AXES)} values; got {len(fixed_config)}"
+            )
 
     payload = torch.load(str(model), map_location="cpu", weights_only=False)
     cfg_dict = (payload.get("extra") or {}).get("cfg", {})
@@ -158,10 +207,14 @@ def export(
     m = build_model(mcfg, num_axes=len(AXES))
     m.load_state_dict(payload["model"])
     task_map = payload.get("task_map") or {}
+    if task is not None:
+        task_map = dict(task_map); task_map["task"] = task
     effective_opset = max(opset, 19) if precision == "fp8" else opset
     export_onnx_from_model(
         m, num_axes=len(AXES), input_size=input_size,
         export_path=output, opset=effective_opset, simplify=simplify,
         dynamic_hw=dynamic_hw, task_map=task_map, precision=precision,
+        fixed_config=fixed_config,
     )
-    typer.echo(f"wrote {output} ({precision})")
+    flavor = f"baked={task or fixed_config}" if fixed_config else "generic"
+    typer.echo(f"wrote {output} ({precision}, {flavor})")

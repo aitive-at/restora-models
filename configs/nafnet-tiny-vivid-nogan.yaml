@@ -39,11 +39,11 @@ data:
 compound:
   identity_prob: 0.05
   axis_probs:
-    colorize: 0.75
-    denoise:  0.40
-    sharpen:  0.75
-    dejpeg:   0.40
-    deblur:   0.40
+    colorize: 0.50
+    denoise:  0.50
+    sharpen:  0.50
+    dejpeg:   0.50
+    deblur:   0.50
   degradations:
     colorize: {}
     denoise:  { sigma_range: [0.005, 0.05] }
@@ -51,6 +51,12 @@ compound:
     dejpeg:   { quality_range: [20, 70] }
     deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
 
+# Proven balanced recipe (2026-05-14 iter-6 on nafnet-large):
+# chroma_lab=0.10, colorfulness=0.05, freq_l1=0.30 sharpen-only,
+# axis_probs=0.5 uniform — gives the strongest improvement across all
+# tasks together. Higher chroma_lab weights crush easy tasks; lower
+# weights don't anchor color. GAN deliberately omitted (destabilizes
+# training from cold; introduce mid-training via curriculum if desired).
 losses:
   - name: l1_rgb
     weight: 1.0
@@ -59,13 +65,13 @@ losses:
     config:
       criterion: l1
   - name: chroma_lab
-    weight: 0.25
-    apply_to_axes: [colorize]
-  - name: colorfulness
     weight: 0.10
     apply_to_axes: [colorize]
+  - name: colorfulness
+    weight: 0.05
+    apply_to_axes: [colorize]
   - name: freq_l1
-    weight: 0.40
+    weight: 0.30
     apply_to_axes: [sharpen]
 
 optim_g:

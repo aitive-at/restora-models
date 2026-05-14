@@ -82,9 +82,23 @@ def export_onnx_from_model(
     dynamic_hw: bool = False,
     task_map: dict | None = None,
     precision: Precision = "fp32",
+    fixed_config: list[float] | None = None,
 ) -> None:
+    """Export a refine model to ONNX.
+
+    If ``fixed_config`` is None, the exported ONNX has two inputs
+    (``input``, ``config``). If a list of `num_axes` floats is supplied,
+    the config tensor is BAKED into the ONNX as a constant buffer and
+    the exported graph has only the single ``input`` tensor — that's
+    the "RGB in, RGB out" variant for per-task deployment.
+    """
     if precision not in _VALID_PRECISION:
         raise ValueError(f"unknown precision {precision!r}; must be one of {_VALID_PRECISION}")
+    if fixed_config is not None:
+        if len(fixed_config) != num_axes:
+            raise ValueError(
+                f"fixed_config has {len(fixed_config)} entries; expected {num_axes}"
+            )
     if precision == "fp4":
         raise NotImplementedError(
             "fp4 / NVFP4 export not yet supported by stable tooling. "
@@ -102,27 +116,49 @@ def export_onnx_from_model(
     dummy_rgb = torch.rand(1, 3, input_size, input_size, dtype=torch.float32)
     dummy_cfg = torch.zeros(1, num_axes, dtype=torch.float32)
 
-    dynamic_axes: dict[str, dict[int, str]] = {
-        "input":  {0: "batch"},
-        "config": {0: "batch"},
-        "output": {0: "batch"},
-    }
-    if dynamic_hw:
-        dynamic_axes["input"][2] = "height"; dynamic_axes["input"][3] = "width"
-        dynamic_axes["output"][2] = "height"; dynamic_axes["output"][3] = "width"
-
     # Pin the ONNX contract behind a stable wrapper module so future
     # backbone changes can't drift the exported graph's I/O signature.
-    from .wrapper import ONNXExportWrapper
-    export_model = ONNXExportWrapper(model)
-    export_model.train(False)
+    # Two flavors:
+    #   - generic 2-input (input, config) -> output
+    #   - per-task 1-input (input) -> output, with config baked as a buffer
+    from .wrapper import ONNXExportWrapper, ONNXExportWrapperBaked
 
-    torch.onnx.export(
-        export_model, (dummy_rgb, dummy_cfg), str(export_path),
-        opset_version=opset,
-        input_names=["input", "config"], output_names=["output"],
-        dynamic_axes=dynamic_axes,
-    )
+    if fixed_config is not None:
+        export_model = ONNXExportWrapperBaked(model, fixed_config=fixed_config,
+                                              clamp_output=True)
+        export_model.train(False)
+        dynamic_axes_baked: dict[str, dict[int, str]] = {
+            "input":  {0: "batch"},
+            "output": {0: "batch"},
+        }
+        if dynamic_hw:
+            dynamic_axes_baked["input"][2] = "height"
+            dynamic_axes_baked["input"][3] = "width"
+            dynamic_axes_baked["output"][2] = "height"
+            dynamic_axes_baked["output"][3] = "width"
+        torch.onnx.export(
+            export_model, (dummy_rgb,), str(export_path),
+            opset_version=opset,
+            input_names=["input"], output_names=["output"],
+            dynamic_axes=dynamic_axes_baked,
+        )
+    else:
+        dynamic_axes: dict[str, dict[int, str]] = {
+            "input":  {0: "batch"},
+            "config": {0: "batch"},
+            "output": {0: "batch"},
+        }
+        if dynamic_hw:
+            dynamic_axes["input"][2] = "height"; dynamic_axes["input"][3] = "width"
+            dynamic_axes["output"][2] = "height"; dynamic_axes["output"][3] = "width"
+        export_model = ONNXExportWrapper(model)
+        export_model.train(False)
+        torch.onnx.export(
+            export_model, (dummy_rgb, dummy_cfg), str(export_path),
+            opset_version=opset,
+            input_names=["input", "config"], output_names=["output"],
+            dynamic_axes=dynamic_axes,
+        )
 
     if simplify:
         try:
@@ -143,23 +179,35 @@ def export_onnx_from_model(
     if verify_parity:
         import onnxruntime as ort
         sess = ort.InferenceSession(str(export_path), providers=["CPUExecutionProvider"])
-        # Detect expected input dtypes from the session — fp16 conversion may have
-        # changed the IO dtype to float16, so feed matching arrays.
         _ort_dtype_map = {"tensor(float)": np.float32, "tensor(float16)": np.float16}
         in_dtypes = {i.name: _ort_dtype_map.get(i.type, np.float32) for i in sess.get_inputs()}
 
-        def _ort_inputs(x_f32: np.ndarray, c_f32: np.ndarray) -> dict:
-            return {
-                "input":  x_f32.astype(in_dtypes.get("input", np.float32), copy=False),
-                "config": c_f32.astype(in_dtypes.get("config", np.float32), copy=False),
-            }
+        def _ort_inputs(x_f32: np.ndarray, c_f32: np.ndarray | None) -> dict:
+            d = {"input": x_f32.astype(in_dtypes.get("input", np.float32), copy=False)}
+            if c_f32 is not None:
+                d["config"] = c_f32.astype(in_dtypes.get("config", np.float32), copy=False)
+            return d
 
-        for label, vec in _reference_configs(num_axes):
+        # Reference configs to check against PyTorch. For the baked variant
+        # there's only ONE meaningful config (the one baked in), so we skip
+        # the loop over reference configs and use the fixed one directly.
+        if fixed_config is not None:
+            refs = [("baked", list(fixed_config))]
+        else:
+            refs = _reference_configs(num_axes)
+
+        for label, vec in refs:
             x = np.random.rand(1, 3, input_size, input_size).astype(np.float32)
             c = np.array([vec], dtype=np.float32)
-            ort_out = sess.run(None, _ort_inputs(x, c))[0].astype(np.float32)
+            if fixed_config is not None:
+                ort_out = sess.run(None, _ort_inputs(x, None))[0].astype(np.float32)
+            else:
+                ort_out = sess.run(None, _ort_inputs(x, c))[0].astype(np.float32)
             with torch.no_grad():
                 t_out = model(torch.from_numpy(x), torch.from_numpy(c)).numpy()
+                if fixed_config is not None:
+                    # Baked wrapper clamps output by default; mirror here for parity.
+                    t_out = np.clip(t_out, 0.0, 1.0)
             diff = float(np.abs(ort_out - t_out).max())
             if diff > parity_atol:
                 raise RuntimeError(
@@ -167,15 +215,20 @@ def export_onnx_from_model(
                 )
         if dynamic_hw:
             alt_h = max(48, input_size // 2); alt_w = max(48, input_size // 2 + 32)
-            for label, vec in _reference_configs(num_axes):
+            for label, vec in refs:
                 x = np.random.rand(1, 3, alt_h, alt_w).astype(np.float32)
                 c = np.array([vec], dtype=np.float32)
                 try:
-                    ort_out = sess.run(None, _ort_inputs(x, c))[0].astype(np.float32)
+                    if fixed_config is not None:
+                        ort_out = sess.run(None, _ort_inputs(x, None))[0].astype(np.float32)
+                    else:
+                        ort_out = sess.run(None, _ort_inputs(x, c))[0].astype(np.float32)
                 except Exception as e:
                     raise RuntimeError(f"dynamic_hw ONNX rejected {alt_h}x{alt_w}: {e}") from e
                 with torch.no_grad():
                     t_out = model(torch.from_numpy(x), torch.from_numpy(c)).numpy()
+                    if fixed_config is not None:
+                        t_out = np.clip(t_out, 0.0, 1.0)
                 diff = float(np.abs(ort_out - t_out).max())
                 if diff > parity_atol:
                     raise RuntimeError(
@@ -186,6 +239,11 @@ def export_onnx_from_model(
         sidecar = export_path.with_suffix(".task_map.json")
         task_map_with_prec = dict(task_map)
         task_map_with_prec["precision"] = precision
+        if fixed_config is not None:
+            task_map_with_prec["baked_config"] = list(fixed_config)
+            task_map_with_prec["onnx_inputs"] = ["input"]    # signal: single-input ONNX
+        else:
+            task_map_with_prec["onnx_inputs"] = ["input", "config"]
         sidecar_tmp = sidecar.with_suffix(".json.tmp")
         sidecar_tmp.write_text(json.dumps(task_map_with_prec, indent=2))
         os.replace(sidecar_tmp, sidecar)

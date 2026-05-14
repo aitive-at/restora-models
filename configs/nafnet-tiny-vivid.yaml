@@ -43,11 +43,11 @@ data:
 compound:
   identity_prob: 0.05
   axis_probs:
-    colorize: 0.75
-    denoise:  0.40
-    sharpen:  0.75
-    dejpeg:   0.40
-    deblur:   0.40
+    colorize: 0.50
+    denoise:  0.50
+    sharpen:  0.50
+    dejpeg:   0.50
+    deblur:   0.50
   degradations:
     colorize: {}
     denoise:  { sigma_range: [0.005, 0.05] }
@@ -55,7 +55,9 @@ compound:
     dejpeg:   { quality_range: [20, 70] }
     deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
 
-# Inline losses (overrides the standard preset; can't pick-edit a preset).
+# Vivid recipe — slightly heavier color weights than nafnet-tiny-vivid-nogan
+# plus GAN. CAVEAT: GAN-from-cold can destabilize training. For production,
+# either prefer nafnet-tiny-vivid-nogan.yaml or add GAN warmup externally.
 losses:
   - name: l1_rgb
     weight: 1.0
@@ -64,13 +66,13 @@ losses:
     config:
       criterion: l1
   - name: chroma_lab
-    weight: 0.25
+    weight: 0.15
     apply_to_axes: [colorize]
   - name: colorfulness
-    weight: 0.10
+    weight: 0.08
     apply_to_axes: [colorize]
   - name: freq_l1
-    weight: 0.40
+    weight: 0.30
     apply_to_axes: [sharpen]
   - name: gan
     weight: 0.05
