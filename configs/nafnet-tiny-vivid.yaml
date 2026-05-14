@@ -1,0 +1,107 @@
+# NAFNet-tiny — "vivid" loss rebalance experiment
+#
+# Tests the cheapest hypothesis from the colorize/sharpen quality
+# discussion: change ONLY the loss weights, hold everything else
+# constant against the laion-compound recipe.
+#
+# Recipe deltas vs standard preset:
+#   chroma_lab    0.05 -> 0.25   stronger Lab-ab hue anchor on colorize
+#   colorfulness  0.02 -> 0.10   modestly stronger vividness on colorize
+#   freq_l1       0.20 -> 0.40   stronger high-freq pressure on sharpen
+#                                AND drop deblur from apply_to_axes
+#                                (deblur is doing fine, no help needed)
+#   gan           NEW  at 0.05   adversarial signal on sharpen+colorize
+#                                (the two ill-posed tasks that need a
+#                                 perception-axis nudge per Blau-Michaeli)
+#
+# Switch to PromptIR-tiny by changing model.type to "promptir" — the
+# loss/data/optim/scheduler/CLI/ONNX contract is backbone-agnostic.
+
+defaults: tiny.yaml
+
+run:
+  name: "nafnet-tiny-vivid-${date:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  type: nafnet
+  size: tiny
+  input_size: 256
+  task_embed_dim: 128
+
+data:
+  root: "~/data/laion-images"
+  val_fraction: 0.005
+  num_fixed_preview_samples: 1
+  num_random_preview_samples: 1
+  loader:
+    batch_size: 32
+    num_workers: 16
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 4
+
+compound:
+  identity_prob: 0.05
+  axis_probs:
+    colorize: 0.5
+    denoise:  0.5
+    sharpen:  0.5
+    dejpeg:   0.5
+    deblur:   0.5
+  degradations:
+    colorize: {}
+    denoise:  { sigma_range: [0.005, 0.05] }
+    sharpen:  { factor_choices: [2, 4, 8] }
+    dejpeg:   { quality_range: [20, 70] }
+    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
+
+# Inline losses (overrides the standard preset; can't pick-edit a preset).
+losses:
+  - name: l1_rgb
+    weight: 1.0
+  - name: perceptual_vgg16bn
+    weight: 0.5
+    config:
+      criterion: l1
+  - name: chroma_lab
+    weight: 0.25
+    apply_to_axes: [colorize]
+  - name: colorfulness
+    weight: 0.10
+    apply_to_axes: [colorize]
+  - name: freq_l1
+    weight: 0.40
+    apply_to_axes: [sharpen]
+  - name: gan
+    weight: 0.05
+    config:
+      gan_type: hinge
+    apply_to_axes: [colorize, sharpen]
+
+optim_g:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  fused: true
+
+optim_d:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.99]
+  fused: true
+
+scheduler:
+  type: cosine
+  warmup_steps: 2000
+  total_steps: 100000
+
+train:
+  total_steps: 100000
+  amp: "bf16"
+  preview_every_s: 60
+  preview_history_every: 1000
+
+export:
+  on_finish: true

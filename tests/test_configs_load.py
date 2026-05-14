@@ -30,3 +30,17 @@ def test_promptir_laion_config_loads():
     assert cfg.model.size == "large"
     names = [l.name for l in cfg.losses]
     assert "chroma_lab" in names
+
+
+def test_nafnet_tiny_vivid_config_loads():
+    cfg = load_config(ROOT / "nafnet-tiny-vivid.yaml")
+    assert cfg.model.type == "nafnet"
+    assert cfg.model.size == "tiny"
+    by_name = {l.name: l for l in cfg.losses}
+    # The cheap-experiment recipe deltas
+    assert by_name["chroma_lab"].weight == 0.25
+    assert by_name["colorfulness"].weight == 0.10
+    assert by_name["freq_l1"].weight == 0.40
+    assert by_name["freq_l1"].apply_to_axes == ["sharpen"]   # deblur dropped
+    assert by_name["gan"].weight == 0.05
+    assert set(by_name["gan"].apply_to_axes) == {"colorize", "sharpen"}
