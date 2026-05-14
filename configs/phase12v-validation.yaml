@@ -1,0 +1,39 @@
+# Short validation config: crosses GAN warmup so we see all three pieces
+# (Phase 1 deterministic + Phase 2 adversarial + temporal) compose
+# stably. Used for autonomous iteration, not production.
+
+defaults: phase12v-nafnet-tiny.yaml
+
+run:
+  name: "phase12v-validation-${date:%Y-%m-%d_%H-%M-%S}"
+
+data:
+  loader:
+    batch_size: 16
+    num_workers: 8
+    prefetch_factor: 4
+
+# Validation timing: 3000 total steps, GAN warmup 1000-1500.
+# Phase 1: steps 0-1000 (deterministic + temporal)
+# GAN warmup: steps 1000-1500 (adversarial linearly ramps in)
+# Phase 2 stable: steps 1500-3000
+scheduler:
+  type: cosine
+  warmup_steps: 200
+  total_steps: 3000
+
+train:
+  total_steps: 3000
+  preview_every_s: 30
+  preview_history_every: 500
+  ckpt_every_steps: 1000
+  log_every_steps: 25
+  gan_warmup_start: 1000
+  gan_warmup_steps: 500
+
+video:
+  enabled: true
+  root: "~/data/synthetic-videos"
+  video_batch_prob: 0.25
+  batch_size: 8
+  num_workers: 4
