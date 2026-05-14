@@ -21,3 +21,6 @@ samples/
 .coliraz-manifest.txt
 *.onnx
 .cache/
+
+# Local Claude Code state
+.claude/
