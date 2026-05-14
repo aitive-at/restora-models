@@ -61,10 +61,22 @@ def test_promptir_full_pipeline(tmp_path, tmp_image_dir):
     assert tm["model_type"] == "promptir", \
         f"sidecar should reflect actual model type; got {tm.get('model_type')!r}"
 
+    # Dual-head verification: after training, head_ab.weight should have
+    # changed from its zero init (it received gradient on colorize samples).
+    # head_rgb.weight should have moved as well (gradient on every sample).
+    payload = torch.load(str(final), map_location="cpu", weights_only=False)
+    sd = payload["model"]
+    head_ab_w = sd.get("dual_head.head_ab.weight")
+    head_rgb_w = sd.get("dual_head.head_rgb.weight")
+    assert head_ab_w is not None,  "dual_head.head_ab.weight not in checkpoint"
+    assert head_rgb_w is not None, "dual_head.head_rgb.weight not in checkpoint"
+    assert head_ab_w.abs().max().item() > 1e-6, \
+        "head_ab.weight didn't get any gradient — dual-head wiring broken"
+    assert head_rgb_w.abs().max().item() > 1e-6
+
     from refine.export.onnx import export_onnx_from_model
     from refine.models import build_model
 
-    payload = torch.load(str(final), map_location="cpu", weights_only=False)
     mcfg = ModelConfig(**(payload["extra"]["cfg"]["model"]))
     m = build_model(mcfg, num_axes=5)
     m.load_state_dict(payload["model"])
