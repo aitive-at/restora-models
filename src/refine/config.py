@@ -5,8 +5,9 @@ import datetime as _dt
 from pathlib import Path
 from typing import Any, Literal
 
+import os
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 
 # ---------- model ----------------------------------------------------------
@@ -48,6 +49,16 @@ class DataConfig(BaseModel):
     num_random_preview_samples: int = 1
     augment: AugmentConfig = AugmentConfig()
     loader: LoaderConfig = LoaderConfig()
+
+    @field_validator("root")
+    @classmethod
+    def _expand_root(cls, v: str) -> str:
+        """Expand ~ and $VAR in data.root so configs can be portable.
+
+        Without this, Path('~/data/laion-images') is a literal, and the
+        dataset scan finds zero files even when the directory exists.
+        """
+        return os.path.expandvars(os.path.expanduser(v))
 
 
 # ---------- compound degradations -----------------------------------------

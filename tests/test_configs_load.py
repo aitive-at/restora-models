@@ -46,6 +46,26 @@ def test_nafnet_tiny_vivid_config_loads():
     assert set(by_name["gan"].apply_to_axes) == {"colorize", "sharpen"}
 
 
+def test_data_root_expands_tilde():
+    """Regression: data.root in YAML can use ~ — it must expand to $HOME at
+    load time so Path() / directory walks work."""
+    import os
+    from refine.config import DataConfig, LoaderConfig, AugmentConfig
+    home = os.path.expanduser("~")
+    cfg = DataConfig(root="~/data/laion-images",
+                     loader=LoaderConfig(), augment=AugmentConfig())
+    assert cfg.root == f"{home}/data/laion-images"
+    assert not cfg.root.startswith("~")
+
+
+def test_data_root_expands_env_var(monkeypatch):
+    monkeypatch.setenv("REFINE_TEST_DATA_DIR", "/tmp/refine-test-data")
+    from refine.config import DataConfig, LoaderConfig, AugmentConfig
+    cfg = DataConfig(root="$REFINE_TEST_DATA_DIR/sub",
+                     loader=LoaderConfig(), augment=AugmentConfig())
+    assert cfg.root == "/tmp/refine-test-data/sub"
+
+
 def test_default_axis_probs_rebalanced():
     cfg = load_config(ROOT / "default.yaml", overrides={"data": {"root": "/tmp"}})
     ap = cfg.compound.axis_probs
