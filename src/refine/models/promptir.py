@@ -13,7 +13,7 @@ from refine.config import ModelConfig
 from .prompt_block import PromptBlock
 from .registry import register_model
 from .restormer_block import RestormerBlock
-from .task_embed import ConfigEmbed
+from .config_embed import ConfigEmbed
 
 
 _SIZE_PRESETS: dict[str, dict] = {

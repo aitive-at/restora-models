@@ -332,12 +332,8 @@ class Trainer:
             idxs += extra
 
         import random as _random
+        from refine.data.compound import DEGRADE_ORDER
         from refine.data.degradations.registry import build_degradation
-        _DEGRADE_ORDER = ("deblur", "denoise", "sharpen", "dejpeg", "colorize")
-        _AXIS_TO_REG = {
-            "colorize": "colorize", "denoise": "denoise",
-            "sharpen": "sharpen", "dejpeg": "jpeg", "deblur": "deblur",
-        }
 
         for label, vec, opts in preview_configs:
             flags = dict(zip(AXES, vec))
@@ -354,7 +350,7 @@ class Trainer:
                 clean_t = self.val_ds.clean[i]
                 rng = _random.Random((self.cfg.run.seed * 1_000_003) ^ i)
                 rgb_np = clean_t.permute(1, 2, 0).numpy().copy()
-                for axis in _DEGRADE_ORDER:
+                for axis in DEGRADE_ORDER:
                     if flags[axis]:
                         deg = sharpen_override if (axis == "sharpen" and sharpen_override is not None) \
                               else self.val_ds.degs[axis]

@@ -8,7 +8,7 @@ from refine.config import ModelConfig
 from .color import LabToRgb, RgbToLab
 from .nafblock import NAFBlock
 from .registry import register_model
-from .task_embed import ConfigEmbed
+from .config_embed import ConfigEmbed
 from .transformer_block import TransformerBlock
 
 

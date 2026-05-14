@@ -15,19 +15,25 @@ from .degradations import jpeg as _jpeg  # noqa: F401
 from .degradations import superres as _superres  # noqa: F401
 from .degradations.registry import build_degradation
 
-_AXES = ("colorize", "denoise", "sharpen", "dejpeg", "deblur")
+AXES: tuple[str, ...] = ("colorize", "denoise", "sharpen", "dejpeg", "deblur")
 # Real-world causal order: blur first (camera), then noise (sensor),
 # then downsample (resolution), then jpeg (compression), then gray (color loss).
-_DEGRADE_ORDER = ("deblur", "denoise", "sharpen", "dejpeg", "colorize")
+DEGRADE_ORDER: tuple[str, ...] = ("deblur", "denoise", "sharpen", "dejpeg", "colorize")
 
 # Map axis name -> registry name (for axes whose registry name differs)
-_AXIS_TO_REG: dict[str, str] = {
+AXIS_TO_REG: dict[str, str] = {
     "colorize": "colorize",
     "denoise": "denoise",
     "sharpen": "sharpen",
     "dejpeg": "jpeg",
     "deblur": "deblur",
 }
+
+# Legacy aliases — keep as private re-exports for any code still using the
+# underscored names internally. Public callers should use the unprefixed names.
+_AXES = AXES
+_DEGRADE_ORDER = DEGRADE_ORDER
+_AXIS_TO_REG = AXIS_TO_REG
 
 
 class CompoundDegradationWrapper(Dataset):
@@ -86,4 +92,3 @@ def collate_compound(batch: list[dict]) -> dict:
     }
 
 
-AXES = _AXES  # public re-export

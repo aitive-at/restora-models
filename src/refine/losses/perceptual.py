@@ -18,17 +18,10 @@ _LAYER_INDICES = {
 }
 
 
-def _gram(x: torch.Tensor) -> torch.Tensor:
-    b, c, h, w = x.shape
-    f = x.view(b, c, h * w)
-    return f @ f.transpose(1, 2) / (c * h * w)
-
-
 @register_loss("perceptual_vgg16bn")
 class VGG16BNPerceptualLoss(RestorationLoss):
     def __init__(self, layer_weights: Mapping[str, float] | None = None,
-                 criterion: str = "l1", style_weight: float = 0.0,
-                 use_input_norm: bool = True) -> None:
+                 criterion: str = "l1", use_input_norm: bool = True) -> None:
         super().__init__()
         from torchvision.models import VGG16_BN_Weights, vgg16_bn
 
@@ -36,7 +29,6 @@ class VGG16BNPerceptualLoss(RestorationLoss):
             layer_weights = {"conv1_1": 0.0625, "conv2_1": 0.125, "conv3_1": 0.25,
                              "conv4_1": 0.5, "conv5_1": 1.0}
         self._weights = dict(layer_weights)
-        self.style_weight = float(style_weight)
         self._input_norm = bool(use_input_norm)
 
         feats = vgg16_bn(weights=VGG16_BN_Weights.DEFAULT).features
@@ -67,17 +59,10 @@ class VGG16BNPerceptualLoss(RestorationLoss):
     def forward(self, ctx: LossContext) -> torch.Tensor:
         device_type = ctx.pred_rgb.device.type
         with torch.amp.autocast(device_type, enabled=False):
-            pred_rgb = ctx.pred_rgb.float()
-            gt_rgb = ctx.clean_rgb.float()
-            pred_f = self._features(pred_rgb)
+            pred_f = self._features(ctx.pred_rgb.float())
             with torch.no_grad():
-                gt_f = self._features(gt_rgb)
+                gt_f = self._features(ctx.clean_rgb.float())
             perc: torch.Tensor | float = 0.0
             for name, w in self._weights.items():
                 perc = perc + w * self._criterion(pred_f[name], gt_f[name].detach())
-            if self.style_weight > 0:
-                sty: torch.Tensor | float = 0.0
-                for name, w in self._weights.items():
-                    sty = sty + w * self._criterion(_gram(pred_f[name]), _gram(gt_f[name].detach()))
-                perc = perc + self.style_weight * sty
         return perc

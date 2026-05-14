@@ -1,6 +1,6 @@
 import torch
 
-from refine.losses.pixel import CharbonnierRgbLoss, L1RgbLoss
+from refine.losses.pixel import L1RgbLoss
 from refine.losses.registry import LossContext
 
 
@@ -24,7 +24,7 @@ def test_l1_positive_when_unequal():
     assert L1RgbLoss()(_ctx(pred=pred)).item() == 1.0
 
 
-def test_charbonnier_grad():
+def test_l1_backprop():
     pred = torch.randn(2, 3, 4, 4, requires_grad=True)
-    CharbonnierRgbLoss()(_ctx(pred=pred)).backward()
+    L1RgbLoss()(_ctx(pred=pred)).backward()
     assert pred.grad is not None and pred.grad.abs().sum() > 0

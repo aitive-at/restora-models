@@ -16,21 +16,14 @@ from refine.train import Trainer
 
 @pytest.mark.skipif(os.environ.get("REFINE_SLOW") != "1",
                     reason="e2e smoke is slow; set REFINE_SLOW=1 to run")
-def test_train_then_infer_e2e(tmp_path):
-    data_dir = tmp_path / "imgs"
-    data_dir.mkdir()
-    rng = np.random.default_rng(0)
-    for i in range(8):
-        cv2.imwrite(str(data_dir / f"img{i}.png"),
-                    rng.integers(0, 256, size=(96, 96, 3), dtype=np.uint8))
-
+def test_train_then_infer_e2e(tmp_path, tmp_image_dir):
     out_dir = tmp_path / "run"
     cfg = Config(
         run=RunConfig(name="smoke", output_dir=str(out_dir), seed=0),
         model=ModelConfig(type="nafnet", size="tiny", nf=8,
                           enc_depths=[1, 1, 1, 1], bottle_blocks=1, hidden_dim=32,
                           task_embed_dim=16, input_size=64),
-        data=DataConfig(root=str(data_dir), val_fraction=0.25,
+        data=DataConfig(root=str(tmp_image_dir), val_fraction=0.25,
                         num_fixed_preview_samples=1, num_random_preview_samples=0,
                         loader=LoaderConfig(batch_size=2, num_workers=0,
                                             persistent_workers=False)),
@@ -61,7 +54,7 @@ def test_train_then_infer_e2e(tmp_path):
     assert sidecar.exists()
 
     pipe = load_pipeline(final_ckpt, device=torch.device("cpu"))
-    img = cv2.imread(str(data_dir / "img0.png"))
+    img = cv2.imread(str(tmp_image_dir / "img0.png"))
     out = pipe.process(img, config={"colorize": True, "denoise": False,
                                     "sharpen": False, "dejpeg": False, "deblur": False})
     assert out.shape == img.shape and out.dtype == np.uint8
