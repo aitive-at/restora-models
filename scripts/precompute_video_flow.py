@@ -101,7 +101,11 @@ def main():
                 img_tk = _load_image_as_tensor(frames[fi + k], args.resolution,
                                                args.resolution, device)
                 img_t_n, img_tk_n = transforms(img_t, img_tk)
-                flow_list = model(img_t_n, img_tk_n)
+                # Backward flow tk -> t. flow_warp samples at p + flow[p];
+                # to align warp(pred_t) with pred_tk we need "for each pixel
+                # p in frame_tk, where in frame_t lives the same content."
+                # That's RAFT(image_tk, image_t).
+                flow_list = model(img_tk_n, img_t_n)
                 flow = flow_list[-1][0].cpu().numpy().astype(np.float32)
                 np.savez_compressed(out_path, flow=flow)
                 done += 1

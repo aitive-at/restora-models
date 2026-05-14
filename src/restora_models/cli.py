@@ -134,6 +134,9 @@ def train(
     amp: Optional[str] = typer.Option(None, "--amp"),
     total_steps: Optional[int] = typer.Option(None, "--total-steps"),
     resume: Optional[Path] = typer.Option(None, "--resume"),
+    video_root: Optional[Path] = typer.Option(None, "--video-root"),
+    no_video: bool = typer.Option(False, "--no-video"),
+    video_batch_prob: Optional[float] = typer.Option(None, "--video-batch-prob"),
 ) -> None:
     from restora_models.config import load_config
     from restora_models.train import Trainer
@@ -154,6 +157,13 @@ def train(
         overrides.setdefault("scheduler", {})["total_steps"] = total_steps
     if compile_:
         overrides.setdefault("train", {})["compile"] = True
+    if video_root is not None:
+        overrides.setdefault("video", {})["root"] = str(video_root)
+        overrides.setdefault("video", {})["enabled"] = True
+    if no_video:
+        overrides.setdefault("video", {})["enabled"] = False
+    if video_batch_prob is not None:
+        overrides.setdefault("video", {})["video_batch_prob"] = video_batch_prob
 
     cfg = load_config(config, overrides=overrides)
     trainer = Trainer(cfg)

@@ -5,14 +5,16 @@ under per-frame inference (no recurrence, no flicker). The mechanism:
 
     out_t   = model(degrade(frame_t),   config)
     out_t+k = model(degrade(frame_t+k), config)
-    warped  = flow_warp(out_t, flow[t -> t+k])
+    warped  = flow_warp(out_t, flow)
     L_temp  = L1(warped, out_t+k)
 
-`flow_warp` uses a precomputed optical-flow tensor (typically RAFT,
-precomputed offline). At training time the loss is just a backward-warp
-+ L1 — very cheap. Critically, the model's forward signature is
-unchanged; the model is just trained on pairs of frames with a
-consistency penalty.
+Flow convention: `flow_warp(image, flow)` samples image at `(p +
+flow[p])`. For `warped ≈ out_t+k` we therefore need `flow` to be the
+backward optical flow from t+k to t — for each pixel p in t+k's grid,
+where in t lives the same physical content. RAFT precomputes this as
+`RAFT(frame_t+k, frame_t)` (note the argument order). The
+LossContext.flow_t_to_secondary field carries this backward flow
+despite its name; the field name is kept for backward compatibility.
 
 The LossContext is extended with optional `secondary_pred_rgb` and
 `flow_t_to_secondary` fields. If both are present, this loss fires;

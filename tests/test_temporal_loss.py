@@ -1,4 +1,5 @@
 """Tests for the temporal-pair consistency loss + flow_warp helper."""
+import pytest
 import torch
 
 from restora_models.losses.registry import LossContext, build_loss
@@ -78,3 +79,47 @@ def test_temporal_loss_backprop():
     out.backward()
     assert pred.grad is not None
     assert pred.grad.abs().sum().item() > 0
+
+
+def test_flow_warp_translation_known_flow():
+    """A constant +1 dx flow should warp a content-bearing image such
+    that the warped result equals the input shifted left by one pixel
+    (since flow_warp samples at p + flow[p])."""
+    import torch.nn.functional as F
+    # 16x16 step image with content in left half
+    img = torch.zeros(1, 3, 16, 16)
+    img[..., :8] = 1.0
+    flow = torch.zeros(1, 2, 16, 16)
+    flow[:, 0] = 1.0     # dx = +1
+    warped = flow_warp(img, flow)
+    # Expected: warped[p] = img[p + 1]; so the boundary that was at col 8
+    # in img is now at col 7 in warped. Bilinear interpolation introduces
+    # ~1e-7 rounding even at integer pixel positions; use a tolerance.
+    assert warped[0, 0, 0, 6].item() == pytest.approx(1.0, abs=1e-5)
+    assert warped[0, 0, 0, 7].item() == pytest.approx(0.0, abs=1e-5)
+
+
+def test_temporal_loss_via_known_affine_flow():
+    """End-to-end direction check: an analytical backward flow for a small
+    translation should make warp(frame_t) close to frame_tk (small L1)."""
+    import torch.nn.functional as F
+    rng = torch.Generator().manual_seed(0)
+    # Frame_t: 32x32 with patterned content
+    frame_t = torch.rand(1, 3, 32, 32, generator=rng)
+    # Frame_tk: frame_t shifted right by 2 pixels (using F.pad + slice for
+    # exact pixel correspondence). Border becomes zero.
+    frame_tk = torch.zeros_like(frame_t)
+    frame_tk[..., 2:] = frame_t[..., :-2]
+    # Backward flow from tk to t: for each pixel p in tk, content came
+    # from p - 2 in t. So flow[p] = -2 (sampling at p + flow[p] = p - 2).
+    flow = torch.zeros(1, 2, 32, 32)
+    flow[:, 0] = -2.0
+    warped = flow_warp(frame_t, flow)
+    err = F.l1_loss(warped, frame_tk).item()
+    # The right two columns of frame_tk are real content; the left two
+    # are zero (padded). With our flow, warped[p] = frame_t[p - 2]; for
+    # p=0,1 this samples out-of-bounds → grid_sample returns 0 (matches
+    # frame_tk's left padding). For p>=2 we recover frame_t[p-2] which
+    # exactly equals frame_tk[p]. Expected L1: ~0 modulo grid_sample
+    # bilinear-at-integer-positions rounding.
+    assert err < 0.02
