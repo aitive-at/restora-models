@@ -1,8 +1,8 @@
 import torch
 from torch import nn
 
-from refine.losses.perceptual import VGG16BNPerceptualLoss
-from refine.losses.registry import LossContext
+from restora_models.losses.perceptual import VGG16BNPerceptualLoss
+from restora_models.losses.registry import LossContext
 
 
 def test_perceptual_loss_grad_flows():

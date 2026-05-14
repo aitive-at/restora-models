@@ -1,5 +1,5 @@
 def test_standard_preset_includes_chroma_lab():
-    from refine.config import expand_loss_preset
+    from restora_models.config import expand_loss_preset
     losses = expand_loss_preset("standard")
     names = [l.name for l in losses]
     assert "chroma_lab" in names
@@ -13,14 +13,14 @@ def test_standard_preset_includes_chroma_lab():
 
 
 def test_vivid_preset_keeps_chroma_anchor():
-    from refine.config import expand_loss_preset
+    from restora_models.config import expand_loss_preset
     losses = expand_loss_preset("vivid")
     names = [l.name for l in losses]
     assert "chroma_lab" in names
 
 
 def test_full_preset_includes_chroma_lab():
-    from refine.config import expand_loss_preset
+    from restora_models.config import expand_loss_preset
     losses = expand_loss_preset("full")
     names = [l.name for l in losses]
     assert "chroma_lab" in names

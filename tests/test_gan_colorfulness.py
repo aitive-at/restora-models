@@ -1,10 +1,10 @@
 import torch
 from torch import nn
 
-from refine.losses.colorfulness import ColorfulnessLoss
-from refine.losses.gan import GeneratorGANLoss, discriminator_loss
-from refine.losses.registry import LossContext
-from refine.models.discriminator import UNetDiscriminator
+from restora_models.losses.colorfulness import ColorfulnessLoss
+from restora_models.losses.gan import GeneratorGANLoss, discriminator_loss
+from restora_models.losses.registry import LossContext
+from restora_models.models.discriminator import UNetDiscriminator
 
 
 def _ctx(disc=None):

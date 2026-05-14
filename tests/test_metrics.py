@@ -1,6 +1,6 @@
 import torch
 
-from refine.losses.metrics import psnr, ssim
+from restora_models.losses.metrics import psnr, ssim
 
 
 def test_psnr_identical_is_inf():

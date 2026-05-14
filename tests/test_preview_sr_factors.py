@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import torch
 
-from refine.config import (
+from restora_models.config import (
     Config, RunConfig, ModelConfig, DataConfig, LoaderConfig,
     AugmentConfig, CompoundConfig, LossConfig, OptimConfig,
     SchedulerConfig, TrainConfig, ExportConfig,
@@ -33,7 +33,7 @@ def _minimal_cfg(root: str) -> Config:
 
 
 def test_preview_includes_per_factor_sr_rows(tmp_image_dir, monkeypatch):
-    from refine.train.trainer import Trainer
+    from restora_models.train.trainer import Trainer
 
     cfg = _minimal_cfg(str(tmp_image_dir))
     trainer = Trainer(cfg)
@@ -48,7 +48,8 @@ def test_preview_includes_per_factor_sr_rows(tmp_image_dir, monkeypatch):
 def test_preview_per_factor_uses_different_factors(tmp_image_dir):
     """The degraded image in sharpen-2x and sharpen-8x must differ — different
     downsample factors yield different blur amounts."""
-    from refine.train.trainer import Trainer
+    torch.manual_seed(20260514)   # isolation: other tests may have set seed
+    from restora_models.train.trainer import Trainer
 
     cfg = _minimal_cfg(str(tmp_image_dir))
     trainer = Trainer(cfg)

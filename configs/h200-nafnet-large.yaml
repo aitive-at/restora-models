@@ -1,0 +1,96 @@
+# NAFNet-large training config tuned for H200 SXM (140 GB HBM3e, 20 CPU cores)
+# on /workspace/data. Inherits large.yaml -> default.yaml.
+#
+# Key H200-specific tuning:
+#   - batch_size 96 (was 12 on workstation) — ~8x headroom from 140GB VRAM
+#   - num_workers 20 (matches CPU count)
+#   - prefetch_factor 6 (more pipelined data loading)
+#   - amp bf16 (native on Hopper)
+#   - compile on (Inductor on sm_90 is fast & stable)
+#
+# Colorize-specific (per 2026-05-14 quality discussion):
+#   - axis_probs.colorize 0.65 (slightly above uniform 0.5 — needs the
+#     extra gradient signal, but not so much that easy tasks starve)
+#   - chroma_lab weight 0.15 (above the standard 0.10 — production has
+#     more capacity than tiny, can afford stronger color anchor)
+
+defaults: large.yaml
+
+run:
+  name: "h200-nafnet-large-${date:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  type: nafnet
+  size: large
+  input_size: 256
+  task_embed_dim: 128
+
+data:
+  root: "/workspace/data"        # canonical mount point on the H200 box
+  val_fraction: 0.002             # tiny val on a huge dataset is fine
+  num_fixed_preview_samples: 2
+  num_random_preview_samples: 2
+  loader:
+    batch_size: 96
+    num_workers: 20
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 6
+
+compound:
+  identity_prob: 0.05
+  axis_probs:
+    colorize: 0.65    # slightly higher than uniform — emphasize the hard axis
+    denoise:  0.50
+    sharpen:  0.50
+    dejpeg:   0.50
+    deblur:   0.50
+  degradations:
+    colorize: {}
+    denoise:  { sigma_range: [0.005, 0.05] }
+    sharpen:  { factor_choices: [2, 4, 8] }
+    dejpeg:   { quality_range: [20, 70] }
+    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
+
+# Slightly stronger color anchor than the standard preset — feasible with
+# the larger model's capacity to absorb the extra constraint without
+# crushing other tasks (proven at lower magnitudes on tiny iter-6).
+losses:
+  - name: l1_rgb
+    weight: 1.0
+  - name: perceptual_vgg16bn
+    weight: 0.5
+    config:
+      criterion: l1
+  - name: chroma_lab
+    weight: 0.15
+    apply_to_axes: [colorize]
+  - name: colorfulness
+    weight: 0.05
+    apply_to_axes: [colorize]
+  - name: freq_l1
+    weight: 0.30
+    apply_to_axes: [sharpen]
+
+optim_g:
+  type: AdamW
+  lr: 2.0e-4                     # scale with batch — 2x the workstation lr
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  fused: true
+
+scheduler:
+  type: cosine
+  warmup_steps: 5000             # longer warmup at higher LR / bigger batch
+  total_steps: 500000
+
+train:
+  total_steps: 500000
+  amp: "bf16"
+  preview_every_s: 120
+  preview_history_every: 2000
+  ckpt_every_steps: 5000         # large model = larger ckpts, save less often
+  log_every_steps: 50
+
+export:
+  on_finish: true

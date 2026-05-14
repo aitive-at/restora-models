@@ -1,6 +1,6 @@
 import torch
 
-from refine.data.compound import AXES, CompoundDegradationWrapper, collate_compound
+from restora_models.data.compound import AXES, CompoundDegradationWrapper, collate_compound
 
 
 class _DummyCleanDS:

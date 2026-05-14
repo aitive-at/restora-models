@@ -6,7 +6,7 @@
 
 **Architecture:** Single shared `DualOutputHead` class in `src/refine/models/heads.py` used by PromptIR. NAFNet inlines the same composition (different because its intermediate is Lab, not RGB). A new `ONNXExportWrapper` wraps the model at export time so the exported graph's input/output names + shapes are stable regardless of future internal forward changes. Production configs get an `axis_probs` rebalance (colorize/sharpen 0.5→0.75, easy tasks 0.5→0.4) so the harder axes get more gradient signal per batch.
 
-**Tech Stack:** PyTorch (`nn.Module`, `nn.Conv2d`, `torch.cat`, linear-gate mixing), `refine.models.color.RgbToLab` / `LabToRgb` (existing ONNX-friendly conversion modules), torch.onnx export, onnxruntime parity, pytest.
+**Tech Stack:** PyTorch (`nn.Module`, `nn.Conv2d`, `torch.cat`, linear-gate mixing), `restora_models.models.color.RgbToLab` / `LabToRgb` (existing ONNX-friendly conversion modules), torch.onnx export, onnxruntime parity, pytest.
 
 ---
 
@@ -48,7 +48,7 @@ Create `tests/test_dual_head.py`:
 ```python
 import torch
 
-from refine.models.heads import DualOutputHead
+from restora_models.models.heads import DualOutputHead
 
 
 def _head(in_dim: int = 8) -> DualOutputHead:
@@ -143,7 +143,7 @@ def test_param_count_small():
 - [ ] **Step 2: Run to verify fail**
 
 Run: `.venv/bin/python -m pytest tests/test_dual_head.py -v`
-Expected: FAIL — `refine.models.heads` not importable.
+Expected: FAIL — `restora_models.models.heads` not importable.
 
 - [ ] **Step 3: Implement**
 
@@ -250,7 +250,7 @@ Create `tests/test_onnx_wrapper.py`:
 import torch
 from torch import nn
 
-from refine.export.wrapper import ONNXExportWrapper
+from restora_models.export.wrapper import ONNXExportWrapper
 
 
 class _Toy(nn.Module):
@@ -399,9 +399,9 @@ def test_exporter_uses_wrapper(tmp_path):
         import pytest
         pytest.skip("slow ONNX export, set REFINE_SLOW=1 to run")
 
-    from refine.config import ModelConfig
-    from refine.models import build_model
-    from refine.export.onnx import export_onnx_from_model
+    from restora_models.config import ModelConfig
+    from restora_models.models import build_model
+    from restora_models.export.onnx import export_onnx_from_model
 
     m = build_model(ModelConfig(type="nafnet", size="tiny", input_size=32), num_axes=5)
     out = tmp_path / "wrapped.onnx"
@@ -485,7 +485,7 @@ def test_promptir_has_dual_head():
     cfg = ModelConfig(type="promptir", size="tiny", input_size=32)
     m = build_model(cfg, num_axes=5)
     assert hasattr(m, "dual_head"), "promptir.dual_head missing"
-    from refine.models.heads import DualOutputHead
+    from restora_models.models.heads import DualOutputHead
     assert isinstance(m.dual_head, DualOutputHead)
     assert not hasattr(m, "head"), \
         "self.head must be replaced by self.dual_head, not kept alongside"
@@ -618,8 +618,8 @@ If `tests/test_nafnet.py` doesn't already import torch and ModelConfig and build
 
 ```python
 import torch
-from refine.config import ModelConfig
-from refine.models import build_model
+from restora_models.config import ModelConfig
+from restora_models.models import build_model
 ```
 
 - [ ] **Step 2: Run to verify new tests fail**
@@ -717,9 +717,9 @@ from __future__ import annotations
 
 import torch
 
-from refine.config import ModelConfig
-from refine.models import build_model
-from refine.train.checkpoint import load_checkpoint
+from restora_models.config import ModelConfig
+from restora_models.models import build_model
+from restora_models.train.checkpoint import load_checkpoint
 
 
 def _save_legacy_nafnet_ckpt(tmp_path):

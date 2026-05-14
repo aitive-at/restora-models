@@ -1,9 +1,9 @@
-"""Smoke tests for refine.data.download — module wiring, no network calls."""
+"""Smoke tests for restora_models.data.download — module wiring, no network calls."""
 from __future__ import annotations
 
 import pytest
 
-from refine.data.download import (
+from restora_models.data.download import (
     NUM_PARQUET_SHARDS, _DATASETS, _parquet_filename, list_datasets,
 )
 
@@ -39,6 +39,6 @@ def test_dataset_uuids_are_distinct():
 
 
 def test_download_function_rejects_unknown_dataset():
-    from refine.data.download import download_laion_aesthetic
+    from restora_models.data.download import download_laion_aesthetic
     with pytest.raises(ValueError, match="unknown dataset"):
         download_laion_aesthetic("not-a-real-dataset", output_dir="/tmp/nowhere")

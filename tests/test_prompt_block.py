@@ -1,6 +1,6 @@
 import torch
 
-from refine.models.prompt_block import PromptBlock
+from restora_models.models.prompt_block import PromptBlock
 
 
 def test_forward_shape():

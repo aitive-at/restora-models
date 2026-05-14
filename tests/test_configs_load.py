@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from refine.config import load_config
+from restora_models.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1] / "configs"
 
@@ -26,7 +26,7 @@ def test_laion_compound_loads():
 
 def test_promptir_laion_config_loads():
     from pathlib import Path
-    from refine.config import load_config
+    from restora_models.config import load_config
     cfg = load_config(Path("configs/promptir-laion.yaml"))
     assert cfg.model.type == "promptir"
     assert cfg.model.size == "large"
@@ -63,7 +63,7 @@ def test_data_root_expands_tilde():
     """Regression: data.root in YAML can use ~ — it must expand to $HOME at
     load time so Path() / directory walks work."""
     import os
-    from refine.config import DataConfig, LoaderConfig, AugmentConfig
+    from restora_models.config import DataConfig, LoaderConfig, AugmentConfig
     home = os.path.expanduser("~")
     cfg = DataConfig(root="~/data/laion-images",
                      loader=LoaderConfig(), augment=AugmentConfig())
@@ -73,7 +73,7 @@ def test_data_root_expands_tilde():
 
 def test_data_root_expands_env_var(monkeypatch):
     monkeypatch.setenv("REFINE_TEST_DATA_DIR", "/tmp/refine-test-data")
-    from refine.config import DataConfig, LoaderConfig, AugmentConfig
+    from restora_models.config import DataConfig, LoaderConfig, AugmentConfig
     cfg = DataConfig(root="$REFINE_TEST_DATA_DIR/sub",
                      loader=LoaderConfig(), augment=AugmentConfig())
     assert cfg.root == "/tmp/refine-test-data/sub"

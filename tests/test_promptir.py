@@ -3,9 +3,9 @@ import os
 import pytest
 import torch
 
-from refine.config import ModelConfig
-from refine.models import build_model
-from refine.models.registry import MODEL_REGISTRY
+from restora_models.config import ModelConfig
+from restora_models.models import build_model
+from restora_models.models.registry import MODEL_REGISTRY
 
 
 def test_promptir_registered():
@@ -79,7 +79,7 @@ def test_different_configs_different_outputs():
 
 @pytest.mark.skipif(not os.environ.get("REFINE_SLOW"), reason="slow ONNX export, set REFINE_SLOW=1")
 def test_onnx_export_parity_all_configs(tmp_path):
-    from refine.export.onnx import export_onnx_from_model
+    from restora_models.export.onnx import export_onnx_from_model
 
     cfg = ModelConfig(type="promptir", size="tiny", input_size=64)
     m = build_model(cfg, num_axes=5)
@@ -99,7 +99,7 @@ def test_promptir_has_dual_head():
     cfg = ModelConfig(type="promptir", size="tiny", input_size=32)
     m = build_model(cfg, num_axes=5)
     assert hasattr(m, "dual_head"), "promptir.dual_head missing"
-    from refine.models.heads import DualOutputHead
+    from restora_models.models.heads import DualOutputHead
     assert isinstance(m.dual_head, DualOutputHead)
     assert not hasattr(m, "head"), \
         "self.head must be replaced by self.dual_head, not kept alongside"

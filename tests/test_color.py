@@ -2,7 +2,7 @@ import cv2
 import numpy as np
 import torch
 
-from refine.utils.color import (
+from restora_models.utils.color import (
     derive_gray_rgb_from_rgb,
     lab_to_rgb,
     rgb_to_lab,

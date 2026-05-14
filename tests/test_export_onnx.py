@@ -10,9 +10,9 @@ def test_onnx_export_parity_all_configs(tmp_path):
     import numpy as np
     import torch
 
-    from refine.config import ModelConfig
-    from refine.export.onnx import export_onnx_from_model
-    from refine.models import build_model
+    from restora_models.config import ModelConfig
+    from restora_models.export.onnx import export_onnx_from_model
+    from restora_models.models import build_model
 
     cfg = ModelConfig(type="nafnet", size="tiny", nf=8,
                       enc_depths=[1, 1, 1, 1], bottle_blocks=1, hidden_dim=32,

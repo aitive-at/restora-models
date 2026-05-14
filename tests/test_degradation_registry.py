@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from refine.data.degradations.registry import (
+from restora_models.data.degradations.registry import (
     DEGRADATION_REGISTRY,
     Degradation,
     build_degradation,

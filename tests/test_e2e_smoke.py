@@ -5,13 +5,13 @@ import numpy as np
 import pytest
 import torch
 
-from refine.config import (
+from restora_models.config import (
     AxisProbs, CompoundConfig, CompoundDegradations,
     Config, DataConfig, ExportConfig, LoaderConfig, LossConfig,
     ModelConfig, OptimConfig, RunConfig, SchedulerConfig, TrainConfig,
 )
-from refine.infer.pipeline import load_pipeline
-from refine.train import Trainer
+from restora_models.infer.pipeline import load_pipeline
+from restora_models.train import Trainer
 
 
 @pytest.mark.skipif(os.environ.get("REFINE_SLOW") != "1",

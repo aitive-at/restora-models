@@ -1,0 +1,84 @@
+# PromptIR-large training config tuned for H200 SXM (140 GB, 20 cores)
+# on /workspace/data.
+#
+# PromptIR-large is heavier than NAFNet-large (~26M vs ~33M params with
+# more attention compute per block), so batch is smaller per GPU step.
+# H200 still allows much bigger batches than the workstation default (8).
+
+defaults: large.yaml
+
+run:
+  name: "h200-promptir-large-${date:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  type: promptir
+  size: large
+  input_size: 256
+  task_embed_dim: 128
+
+data:
+  root: "/workspace/data"
+  val_fraction: 0.002
+  num_fixed_preview_samples: 2
+  num_random_preview_samples: 2
+  loader:
+    batch_size: 40                 # ~5x the workstation default of 8
+    num_workers: 20
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 6
+
+compound:
+  identity_prob: 0.05
+  axis_probs:
+    colorize: 0.65                 # same colorize emphasis as nafnet variant
+    denoise:  0.50
+    sharpen:  0.50
+    dejpeg:   0.50
+    deblur:   0.50
+  degradations:
+    colorize: {}
+    denoise:  { sigma_range: [0.005, 0.05] }
+    sharpen:  { factor_choices: [2, 4, 8] }
+    dejpeg:   { quality_range: [20, 70] }
+    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
+
+losses:
+  - name: l1_rgb
+    weight: 1.0
+  - name: perceptual_vgg16bn
+    weight: 0.5
+    config:
+      criterion: l1
+  - name: chroma_lab
+    weight: 0.15
+    apply_to_axes: [colorize]
+  - name: colorfulness
+    weight: 0.05
+    apply_to_axes: [colorize]
+  - name: freq_l1
+    weight: 0.30
+    apply_to_axes: [sharpen]
+
+optim_g:
+  type: AdamW
+  lr: 1.5e-4                       # PromptIR is more sensitive to LR than NAFNet
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  fused: true
+
+scheduler:
+  type: cosine
+  warmup_steps: 5000
+  total_steps: 500000
+
+train:
+  total_steps: 500000
+  amp: "bf16"
+  preview_every_s: 120
+  preview_history_every: 2000
+  ckpt_every_steps: 5000
+  log_every_steps: 50
+
+export:
+  on_finish: true

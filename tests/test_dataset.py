@@ -4,7 +4,7 @@ import cv2
 import numpy as np
 import torch
 
-from refine.data.dataset import MANIFEST_NAME, RecursiveImageDataset, build_manifest
+from restora_models.data.dataset import MANIFEST_NAME, RecursiveImageDataset, build_manifest
 
 
 def test_build_manifest_finds_all_images(tmp_image_dir):

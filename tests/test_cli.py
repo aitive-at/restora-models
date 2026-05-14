@@ -2,7 +2,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from refine.cli import app
+from restora_models.cli import app
 
 runner = CliRunner()
 
@@ -29,7 +29,7 @@ def test_help_train():
 def test_scan_data_writes_manifest(tmp_image_dir):
     r = runner.invoke(app, ["scan-data", "--root", str(tmp_image_dir)])
     assert r.exit_code == 0
-    assert (tmp_image_dir / ".refine-manifest.txt").exists()
+    assert (tmp_image_dir / ".restora-manifest.txt").exists()
 
 
 def test_help_infer_has_axis_flags():

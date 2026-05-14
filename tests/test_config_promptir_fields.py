@@ -1,4 +1,4 @@
-from refine.config import ModelConfig
+from restora_models.config import ModelConfig
 
 
 def test_promptir_fields_default_to_none():

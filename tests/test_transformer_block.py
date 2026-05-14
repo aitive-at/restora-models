@@ -1,6 +1,6 @@
 import torch
 
-from refine.models.transformer_block import TransformerBlock
+from restora_models.models.transformer_block import TransformerBlock
 
 
 def test_transformer_block_shape():

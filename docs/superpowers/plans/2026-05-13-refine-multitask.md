@@ -149,7 +149,7 @@ dependencies = [
 dev = ["pytest>=8", "pytest-cov", "ruff>=0.6"]
 
 [project.scripts]
-refine = "refine.cli:app"
+refine = "restora_models.cli:app"
 
 [build-system]
 requires = ["hatchling"]
@@ -167,7 +167,7 @@ addopts = "-ra -q"
 
 ```python
 """Thin entry point — delegates to the Typer CLI."""
-from refine.cli import app
+from restora_models.cli import app
 
 if __name__ == "__main__":
     app()
@@ -256,7 +256,7 @@ def _root() -> None:
 
 @app.command()
 def version() -> None:
-    from refine import __version__
+    from restora_models import __version__
     typer.echo(__version__)
 ```
 
@@ -339,7 +339,7 @@ import cv2
 import numpy as np
 import torch
 
-from refine.utils.color import (
+from restora_models.utils.color import (
     derive_gray_rgb_from_rgb,
     lab_to_rgb,
     rgb_to_lab,
@@ -476,8 +476,8 @@ Lifted from v1 verbatim.
 ```python
 import time
 
-from refine.utils.gpu import GpuStats, gpu_stats
-from refine.utils.timing import EMA, Stopwatch
+from restora_models.utils.gpu import GpuStats, gpu_stats
+from restora_models.utils.timing import EMA, Stopwatch
 
 
 def test_gpu_stats_returns_none_or_dataclass():
@@ -625,7 +625,7 @@ These wrap the pure functions with `autocast(enabled=False)` for bf16 stability 
 ```python
 import torch
 
-from refine.models.color import LabToRgb, RgbToLab
+from restora_models.models.color import LabToRgb, RgbToLab
 
 
 def test_rgb_to_lab_module_shape():
@@ -674,7 +674,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from refine.utils.color import lab_to_rgb, rgb_to_lab
+from restora_models.utils.color import lab_to_rgb, rgb_to_lab
 
 
 class RgbToLab(nn.Module):
@@ -733,7 +733,7 @@ from pathlib import Path
 
 import pytest
 
-from refine.config import Config, deep_merge, expand_loss_preset, load_config
+from restora_models.config import Config, deep_merge, expand_loss_preset, load_config
 
 
 def test_preset_minimal():
@@ -1033,7 +1033,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 import numpy as np
 import pytest
 
-from refine.data.degradations.registry import (
+from restora_models.data.degradations.registry import (
     DEGRADATION_REGISTRY,
     Degradation,
     build_degradation,
@@ -1140,8 +1140,8 @@ import random
 import numpy as np
 import pytest
 
-from refine.data.degradations import colorization, denoise, deblur, jpeg, superres  # noqa: F401
-from refine.data.degradations.registry import DEGRADATION_REGISTRY
+from restora_models.data.degradations import colorization, denoise, deblur, jpeg, superres  # noqa: F401
+from restora_models.data.degradations.registry import DEGRADATION_REGISTRY
 
 
 @pytest.fixture
@@ -1417,7 +1417,7 @@ import cv2
 import numpy as np
 import torch
 
-from refine.data.dataset import MANIFEST_NAME, RecursiveImageDataset, build_manifest
+from restora_models.data.dataset import MANIFEST_NAME, RecursiveImageDataset, build_manifest
 
 
 def test_build_manifest_finds_all_images(tmp_image_dir):
@@ -1483,7 +1483,7 @@ def hflip(rgb: np.ndarray) -> np.ndarray:
 """Recursive image dataset with manifest cache and deterministic train/val split.
 
 Returns *clean* (3, H, W) float32 RGB. Degradation lives outside the dataset
-(see refine.data.multitask.MultiTaskWrapper).
+(see restora_models.data.multitask.MultiTaskWrapper).
 """
 from __future__ import annotations
 
@@ -1615,9 +1615,9 @@ import random
 import numpy as np
 import torch
 
-from refine.data.degradations import colorization, denoise, superres  # noqa: F401
-from refine.data.degradations.registry import build_degradation
-from refine.data.multitask import MultiTaskWrapper, collate_multitask
+from restora_models.data.degradations import colorization, denoise, superres  # noqa: F401
+from restora_models.data.degradations.registry import build_degradation
+from restora_models.data.multitask import MultiTaskWrapper, collate_multitask
 
 
 class _DummyCleanDS:
@@ -1744,7 +1744,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```python
 import torch
 
-from refine.models.task_embed import TaskEmbed
+from restora_models.models.task_embed import TaskEmbed
 
 
 def test_task_embed_shape():
@@ -1809,7 +1809,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```python
 import torch
 
-from refine.models.nafblock import NAFBlock
+from restora_models.models.nafblock import NAFBlock
 
 
 def test_nafblock_shape():
@@ -1933,7 +1933,7 @@ class NAFBlock(nn.Module):
 ```python
 import torch
 
-from refine.models.transformer_block import TransformerBlock
+from restora_models.models.transformer_block import TransformerBlock
 
 
 def test_transformer_block_shape():
@@ -2016,8 +2016,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```python
 import torch
 
-from refine.config import ModelConfig
-from refine.models import build_model
+from restora_models.config import ModelConfig
+from restora_models.models import build_model
 
 
 def test_nafnet_tiny_forward_shape():
@@ -2068,7 +2068,7 @@ from typing import Type
 
 from torch import nn
 
-from refine.config import ModelConfig
+from restora_models.config import ModelConfig
 
 MODEL_REGISTRY: dict[str, Type[nn.Module]] = {}
 
@@ -2098,7 +2098,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from refine.config import ModelConfig
+from restora_models.config import ModelConfig
 from .color import LabToRgb, RgbToLab
 from .nafblock import NAFBlock
 from .registry import register_model
@@ -2239,8 +2239,8 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```python
 import torch
 
-from refine.losses.pixel import CharbonnierRgbLoss, L1RgbLoss
-from refine.losses.registry import LossContext
+from restora_models.losses.pixel import CharbonnierRgbLoss, L1RgbLoss
+from restora_models.losses.registry import LossContext
 
 
 def _ctx(pred=None, clean=None):
@@ -2380,8 +2380,8 @@ Lifted from v1 with fp32 dispatch already baked in. Operates on RGB (no change n
 import torch
 from torch import nn
 
-from refine.losses.perceptual import VGG16BNPerceptualLoss
-from refine.losses.registry import LossContext
+from restora_models.losses.perceptual import VGG16BNPerceptualLoss
+from restora_models.losses.registry import LossContext
 
 
 def test_perceptual_loss_grad_flows():
@@ -2528,10 +2528,10 @@ GAN and colorfulness lifted from v1; discriminator lifted.
 import torch
 from torch import nn
 
-from refine.losses.colorfulness import ColorfulnessLoss
-from refine.losses.gan import GeneratorGANLoss, discriminator_loss
-from refine.losses.registry import LossContext
-from refine.models.discriminator import UNetDiscriminator
+from restora_models.losses.colorfulness import ColorfulnessLoss
+from restora_models.losses.gan import GeneratorGANLoss, discriminator_loss
+from restora_models.losses.registry import LossContext
+from restora_models.models.discriminator import UNetDiscriminator
 
 
 def _ctx(disc=None):
@@ -2723,8 +2723,8 @@ New: L1 between log-magnitude spectra of pred and clean RGB. Pushes for matching
 ```python
 import torch
 
-from refine.losses.freq import FreqL1Loss
-from refine.losses.registry import LossContext
+from restora_models.losses.freq import FreqL1Loss
+from restora_models.losses.registry import LossContext
 
 
 def test_freq_zero_when_equal():
@@ -2794,7 +2794,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```python
 import torch
 
-from refine.losses.metrics import psnr, ssim, per_task_average
+from restora_models.losses.metrics import psnr, ssim, per_task_average
 
 
 def test_psnr_identical_is_inf():
@@ -2904,9 +2904,9 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```python
 import torch
 
-from refine.config import LossConfig
-from refine.losses import LossSet
-from refine.losses.registry import LossContext
+from restora_models.config import LossConfig
+from restora_models.losses import LossSet
+from restora_models.losses.registry import LossContext
 
 
 def _ctx_two_tasks():
@@ -2956,7 +2956,7 @@ from __future__ import annotations
 
 import torch
 
-from refine.config import LossConfig
+from restora_models.config import LossConfig
 
 from . import colorfulness as _colorfulness  # noqa: F401
 from . import freq as _freq  # noqa: F401
@@ -3053,8 +3053,8 @@ import json
 import torch
 from torch import nn
 
-from refine.train.checkpoint import load_checkpoint, save_checkpoint
-from refine.train.ema import ModelEMA
+from restora_models.train.checkpoint import load_checkpoint, save_checkpoint
+from restora_models.train.ema import ModelEMA
 
 
 def test_ema_converges():
@@ -3229,7 +3229,7 @@ One row per task. Each row: clean | degraded | predicted | |Δ| heatmap.
 import numpy as np
 import torch
 
-from refine.train.preview import render_multitask_grid, write_png_atomic
+from restora_models.train.preview import render_multitask_grid, write_png_atomic
 
 
 def test_render_grid_shape():
@@ -3355,7 +3355,7 @@ Lifted from v1, extended with per-task PSNR panel.
 - [ ] **Step 1: Test**
 
 ```python
-from refine.train.ui import TrainUI
+from restora_models.train.ui import TrainUI
 
 
 def test_ui_renders_with_per_task_metrics():
@@ -3383,8 +3383,8 @@ from rich.panel import Panel
 from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
 from rich.table import Table
 
-from refine.utils.gpu import gpu_stats
-from refine.utils.timing import EMA
+from restora_models.utils.gpu import gpu_stats
+from restora_models.utils.timing import EMA
 
 
 @dataclass
@@ -3528,11 +3528,11 @@ Lifted from v1 with all the bf16 stability lessons (NaN-loss guard, grad-norm gu
 ```python
 import torch
 
-from refine.config import (
+from restora_models.config import (
     Config, DataConfig, DegradationConfig, LoaderConfig, LossConfig, ModelConfig,
     OptimConfig, RunConfig, SchedulerConfig, TrainConfig,
 )
-from refine.train.trainer import Trainer
+from restora_models.train.trainer import Trainer
 
 
 def _make_cfg(image_dir, out_dir):
@@ -3588,15 +3588,15 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from refine.config import Config
-from refine.data.dataset import RecursiveImageDataset
-from refine.data.degradations.registry import build_degradation
-from refine.data.multitask import MultiTaskWrapper, collate_multitask
-from refine.losses import LossContext, LossSet
-from refine.losses.gan import discriminator_loss
-from refine.losses.metrics import per_task_average, psnr
-from refine.models import build_model
-from refine.models.discriminator import UNetDiscriminator
+from restora_models.config import Config
+from restora_models.data.dataset import RecursiveImageDataset
+from restora_models.data.degradations.registry import build_degradation
+from restora_models.data.multitask import MultiTaskWrapper, collate_multitask
+from restora_models.losses import LossContext, LossSet
+from restora_models.losses.gan import discriminator_loss
+from restora_models.losses.metrics import per_task_average, psnr
+from restora_models.models import build_model
+from restora_models.models.discriminator import UNetDiscriminator
 
 from .checkpoint import save_checkpoint
 from .ema import ModelEMA
@@ -3944,7 +3944,7 @@ class Trainer:
 
     def _maybe_export_onnx(self) -> None:
         try:
-            from refine.export.onnx import export_onnx_from_model
+            from restora_models.export.onnx import export_onnx_from_model
         except Exception:
             return
         export_model = self.ema.module if self.ema is not None else self.model
@@ -4000,9 +4000,9 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 import numpy as np
 import torch
 
-from refine.config import ModelConfig
-from refine.infer.pipeline import MultiTaskRefinerPipeline, pad_to_multiple, unpad
-from refine.models import build_model
+from restora_models.config import ModelConfig
+from restora_models.infer.pipeline import MultiTaskRefinerPipeline, pad_to_multiple, unpad
+from restora_models.models import build_model
 
 
 def test_pad_unpad_round_trip():
@@ -4080,8 +4080,8 @@ class MultiTaskRefinerPipeline:
 
 
 def load_pipeline(checkpoint: str | Path, *, device: torch.device | None = None) -> MultiTaskRefinerPipeline:
-    from refine.config import ModelConfig
-    from refine.models import build_model
+    from restora_models.config import ModelConfig
+    from restora_models.models import build_model
 
     payload = torch.load(str(checkpoint), map_location="cpu", weights_only=False)
     cfg_dict = (payload.get("extra") or {}).get("cfg", {})
@@ -4127,9 +4127,9 @@ def test_onnx_export_parity_all_tasks(tmp_path):
     import numpy as np
     import torch
 
-    from refine.config import ModelConfig
-    from refine.export.onnx import export_onnx_from_model
-    from refine.models import build_model
+    from restora_models.config import ModelConfig
+    from restora_models.export.onnx import export_onnx_from_model
+    from restora_models.models import build_model
 
     cfg = ModelConfig(type="nafnet", size="tiny", nf=8,
                       enc_depths=[1, 1, 1, 1], bottle_blocks=1, hidden_dim=32,
@@ -4286,7 +4286,7 @@ Co-Authored-By: Claude Opus 4.7 (1M context) <noreply@anthropic.com>"
 ```python
 from pathlib import Path
 
-from refine.config import load_config
+from restora_models.config import load_config
 
 ROOT = Path(__file__).resolve().parents[1] / "configs"
 
@@ -4450,7 +4450,7 @@ from pathlib import Path
 
 from typer.testing import CliRunner
 
-from refine.cli import app
+from restora_models.cli import app
 
 runner = CliRunner()
 
@@ -4503,13 +4503,13 @@ def _root() -> None:
 
 @app.command()
 def version() -> None:
-    from refine import __version__
+    from restora_models import __version__
     typer.echo(__version__)
 
 
 @app.command(name="scan-data")
 def scan_data(root: Path = typer.Option(..., "--root", exists=True, file_okay=False)) -> None:
-    from refine.data.dataset import build_manifest
+    from restora_models.data.dataset import build_manifest
     paths = build_manifest(root, force=True)
     typer.echo(f"{len(paths)} images indexed under {root}")
 
@@ -4519,7 +4519,7 @@ def list_tasks(
     config: Path = typer.Option(..., "--config", exists=True, dir_okay=False),
     data: Optional[Path] = typer.Option(None, "--data"),
 ) -> None:
-    from refine.config import load_config
+    from restora_models.config import load_config
     overrides = {"data": {"root": str(data)}} if data else None
     cfg = load_config(config, overrides=overrides)
     for i, (name, dcfg) in enumerate(cfg.degradations.items()):
@@ -4537,9 +4537,9 @@ def train(
     total_steps: Optional[int] = typer.Option(None, "--total-steps"),
     resume: Optional[Path] = typer.Option(None, "--resume"),
 ) -> None:
-    from refine.config import load_config
-    from refine.train import Trainer
-    from refine.train.checkpoint import load_checkpoint
+    from restora_models.config import load_config
+    from restora_models.train import Trainer
+    from restora_models.train.checkpoint import load_checkpoint
 
     overrides: dict = {}
     if data is not None:
@@ -4578,7 +4578,7 @@ def infer(
 ) -> None:
     import cv2
     import torch
-    from refine.infer.pipeline import load_pipeline
+    from restora_models.infer.pipeline import load_pipeline
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     pipe = load_pipeline(model, device=device)
@@ -4620,9 +4620,9 @@ def export(
     dynamic_hw: bool = typer.Option(False, "--dynamic-hw/--fixed-hw"),
 ) -> None:
     import torch
-    from refine.config import ModelConfig
-    from refine.export.onnx import export_onnx_from_model
-    from refine.models import build_model
+    from restora_models.config import ModelConfig
+    from restora_models.export.onnx import export_onnx_from_model
+    from restora_models.models import build_model
 
     payload = torch.load(str(model), map_location="cpu", weights_only=False)
     cfg_dict = (payload.get("extra") or {}).get("cfg", {})
@@ -4666,12 +4666,12 @@ import numpy as np
 import pytest
 import torch
 
-from refine.config import (
+from restora_models.config import (
     Config, DataConfig, DegradationConfig, ExportConfig, LoaderConfig, LossConfig,
     ModelConfig, OptimConfig, RunConfig, SchedulerConfig, TrainConfig,
 )
-from refine.infer.pipeline import load_pipeline
-from refine.train import Trainer
+from restora_models.infer.pipeline import load_pipeline
+from restora_models.train import Trainer
 
 
 @pytest.mark.skipif(os.environ.get("REFINE_SLOW") != "1",

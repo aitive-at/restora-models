@@ -1,6 +1,6 @@
 import torch
 
-from refine.models.heads import DualOutputHead
+from restora_models.models.heads import DualOutputHead
 
 
 def _head(in_dim: int = 8) -> DualOutputHead:

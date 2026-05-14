@@ -1,8 +1,8 @@
 import torch
 
-from refine.config import LossConfig
-from refine.losses import LossSet
-from refine.losses.registry import LossContext
+from restora_models.config import LossConfig
+from restora_models.losses import LossSet
+from restora_models.losses.registry import LossContext
 
 
 def _ctx_two_samples():

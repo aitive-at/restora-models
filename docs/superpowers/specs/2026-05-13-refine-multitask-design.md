@@ -113,7 +113,7 @@ coliraz/                                # the existing git repo, renamed in spir
 │   ├── large.yaml
 │   └── laion-multitask.yaml
 ├── tests/                              # ~16 tests, all CPU, < 30 s total
-├── pyproject.toml                      # name = "refine"; scripts: refine = refine.cli:app
+├── pyproject.toml                      # name = "refine"; scripts: refine = restora_models.cli:app
 ├── main.py
 └── README.md
 ```
@@ -538,7 +538,7 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest>=8", "ruff>=0.6"]
 [project.scripts]
-refine = "refine.cli:app"
+refine = "restora_models.cli:app"
 ```
 
 Note: `timm` is **not** in the dependency list (no more ConvNeXt encoder).

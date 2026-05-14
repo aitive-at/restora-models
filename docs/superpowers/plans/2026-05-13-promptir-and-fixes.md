@@ -50,7 +50,7 @@ Create `tests/test_chroma_loss.py`:
 ```python
 import torch
 
-from refine.losses.registry import LOSS_REGISTRY, LossContext, build_loss
+from restora_models.losses.registry import LOSS_REGISTRY, LossContext, build_loss
 
 
 def _ctx(pred, clean):
@@ -128,7 +128,7 @@ from __future__ import annotations
 import torch
 import torch.nn.functional as F
 
-from refine.utils.color import rgb_to_lab
+from restora_models.utils.color import rgb_to_lab
 
 from .registry import LossContext, RestorationLoss, register_loss
 
@@ -192,7 +192,7 @@ Create `tests/test_loss_presets.py`:
 
 ```python
 def test_standard_preset_includes_chroma_lab():
-    from refine.config import expand_loss_preset
+    from restora_models.config import expand_loss_preset
     losses = expand_loss_preset("standard")
     names = [l.name for l in losses]
     assert "chroma_lab" in names
@@ -203,14 +203,14 @@ def test_standard_preset_includes_chroma_lab():
 
 
 def test_vivid_preset_keeps_chroma_anchor():
-    from refine.config import expand_loss_preset
+    from restora_models.config import expand_loss_preset
     losses = expand_loss_preset("vivid")
     names = [l.name for l in losses]
     assert "chroma_lab" in names
 
 
 def test_full_preset_includes_chroma_lab():
-    from refine.config import expand_loss_preset
+    from restora_models.config import expand_loss_preset
     losses = expand_loss_preset("full")
     names = [l.name for l in losses]
     assert "chroma_lab" in names
@@ -290,7 +290,7 @@ from __future__ import annotations
 
 import torch
 
-from refine.config import (
+from restora_models.config import (
     RefineConfig, RunConfig, ModelConfig, DataConfig, LoaderConfig,
     AugmentConfig, CompoundConfig, LossConfig, OptimConfig,
     SchedulerConfig, TrainConfig, ExportConfig,
@@ -322,7 +322,7 @@ def _minimal_cfg(root: str) -> RefineConfig:
 def test_preview_includes_per_factor_sr_rows(tmp_image_dir, monkeypatch):
     # We don't run training; we only instantiate a Trainer and call
     # _build_preview_samples directly.
-    from refine.train.trainer import Trainer
+    from restora_models.train.trainer import Trainer
 
     cfg = _minimal_cfg(str(tmp_image_dir))
     trainer = Trainer(cfg)
@@ -338,7 +338,7 @@ def test_preview_includes_per_factor_sr_rows(tmp_image_dir, monkeypatch):
 def test_preview_per_factor_uses_different_factors(tmp_image_dir):
     """The degraded image in sharpen-2x and sharpen-8x must differ — different
     downsample factors yield different blur amounts."""
-    from refine.train.trainer import Trainer
+    from restora_models.train.trainer import Trainer
 
     cfg = _minimal_cfg(str(tmp_image_dir))
     trainer = Trainer(cfg)
@@ -390,7 +390,7 @@ Edit `src/refine/train/trainer.py`. Find `_build_preview_samples` (~line 306). R
             idxs += extra
 
         import random as _random
-        from refine.data.degradations.registry import build_degradation
+        from restora_models.data.degradations.registry import build_degradation
         _DEGRADE_ORDER = ("deblur", "denoise", "sharpen", "dejpeg", "colorize")
         _AXIS_TO_REG = {
             "colorize": "colorize", "denoise": "denoise",
@@ -466,7 +466,7 @@ EOF
 Create `tests/test_config_promptir_fields.py`:
 
 ```python
-from refine.config import ModelConfig
+from restora_models.config import ModelConfig
 
 
 def test_promptir_fields_default_to_none():
@@ -549,7 +549,7 @@ Create `tests/test_restormer_block.py`:
 ```python
 import torch
 
-from refine.models.restormer_block import RestormerBlock
+from restora_models.models.restormer_block import RestormerBlock
 
 
 def test_forward_shape():
@@ -743,7 +743,7 @@ Create `tests/test_prompt_block.py`:
 ```python
 import torch
 
-from refine.models.prompt_block import PromptBlock
+from restora_models.models.prompt_block import PromptBlock
 
 
 def test_forward_shape():
@@ -878,9 +878,9 @@ import os
 import pytest
 import torch
 
-from refine.config import ModelConfig
-from refine.models import build_model
-from refine.models.registry import MODEL_REGISTRY
+from restora_models.config import ModelConfig
+from restora_models.models import build_model
+from restora_models.models.registry import MODEL_REGISTRY
 
 
 def test_promptir_registered():
@@ -951,7 +951,7 @@ def test_different_configs_different_outputs():
 
 @pytest.mark.skipif(not os.environ.get("REFINE_SLOW"), reason="slow ONNX export, set REFINE_SLOW=1")
 def test_onnx_export_parity_all_configs(tmp_path):
-    from refine.export.onnx import export_onnx_from_model
+    from restora_models.export.onnx import export_onnx_from_model
 
     cfg = ModelConfig(type="promptir", size="tiny", input_size=64)
     m = build_model(cfg, num_axes=5)
@@ -984,7 +984,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from refine.config import ModelConfig
+from restora_models.config import ModelConfig
 from .prompt_block import PromptBlock
 from .registry import register_model
 from .restormer_block import RestormerBlock
@@ -1169,9 +1169,9 @@ import os
 import pytest
 import torch
 
-from refine.config import ModelConfig
-from refine.export.onnx import export_onnx_from_model
-from refine.models import build_model
+from restora_models.config import ModelConfig
+from restora_models.export.onnx import export_onnx_from_model
+from restora_models.models import build_model
 
 
 @pytest.mark.skipif(not os.environ.get("REFINE_SLOW"), reason="slow ONNX export, set REFINE_SLOW=1")
@@ -1434,10 +1434,10 @@ def export(
                                   help="fp32 (default) | fp16 | fp8 | fp4"),
 ) -> None:
     import torch
-    from refine.config import ModelConfig
-    from refine.data.compound import AXES
-    from refine.export.onnx import export_onnx_from_model
-    from refine.models import build_model
+    from restora_models.config import ModelConfig
+    from restora_models.data.compound import AXES
+    from restora_models.export.onnx import export_onnx_from_model
+    from restora_models.models import build_model
 
     payload = torch.load(str(model), map_location="cpu", weights_only=False)
     cfg_dict = (payload.get("extra") or {}).get("cfg", {})
@@ -1499,7 +1499,7 @@ Append to `tests/test_configs_load.py` (if absent, create with this content):
 ```python
 def test_promptir_laion_config_loads():
     from pathlib import Path
-    from refine.config import load_config
+    from restora_models.config import load_config
     cfg = load_config(Path("configs/promptir-laion.yaml"))
     assert cfg.model.type == "promptir"
     assert cfg.model.size == "large"
@@ -1627,12 +1627,12 @@ pytestmark = pytest.mark.skipif(
 
 
 def test_promptir_full_pipeline(tmp_path, tmp_image_dir):
-    from refine.config import (
+    from restora_models.config import (
         RefineConfig, RunConfig, ModelConfig, DataConfig, LoaderConfig,
         AugmentConfig, CompoundConfig, OptimConfig, SchedulerConfig,
         TrainConfig, ExportConfig, expand_loss_preset,
     )
-    from refine.train.trainer import Trainer
+    from restora_models.train.trainer import Trainer
 
     cfg = RefineConfig(
         run=RunConfig(name="smoke", output_dir=str(tmp_path), seed=0),
@@ -1673,8 +1673,8 @@ def test_promptir_full_pipeline(tmp_path, tmp_image_dir):
         assert tm.get("model_type") == "promptir"
 
     # fp16 ONNX export round-trip
-    from refine.export.onnx import export_onnx_from_model
-    from refine.models import build_model
+    from restora_models.export.onnx import export_onnx_from_model
+    from restora_models.models import build_model
 
     payload = torch.load(str(final), map_location="cpu", weights_only=False)
     mcfg = ModelConfig(**(payload["extra"]["cfg"]["model"]))

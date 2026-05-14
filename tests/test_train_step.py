@@ -1,11 +1,11 @@
 import torch
 
-from refine.config import (
+from restora_models.config import (
     AxisProbs, CompoundConfig, CompoundDegradations,
     Config, DataConfig, LoaderConfig, LossConfig, ModelConfig,
     OptimConfig, RunConfig, SchedulerConfig, TrainConfig,
 )
-from refine.train.trainer import Trainer
+from restora_models.train.trainer import Trainer
 
 
 def _make_cfg(image_dir, out_dir):

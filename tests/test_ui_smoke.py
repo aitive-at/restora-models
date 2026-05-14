@@ -1,4 +1,4 @@
-from refine.train.ui import TrainUI
+from restora_models.train.ui import TrainUI
 
 
 def test_ui_renders_with_per_task_metrics():

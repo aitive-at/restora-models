@@ -1,7 +1,7 @@
 import torch
 
-from refine.config import ModelConfig
-from refine.models import build_model
+from restora_models.config import ModelConfig
+from restora_models.models import build_model
 
 
 def test_nafnet_tiny_forward_shape():

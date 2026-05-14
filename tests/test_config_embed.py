@@ -1,6 +1,6 @@
 import torch
 
-from refine.models.config_embed import ConfigEmbed
+from restora_models.models.config_embed import ConfigEmbed
 
 
 def test_config_embed_shape():

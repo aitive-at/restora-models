@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 
-from refine.export.wrapper import ONNXExportWrapper
+from restora_models.export.wrapper import ONNXExportWrapper
 
 
 class _Toy(nn.Module):
@@ -56,7 +56,7 @@ def test_signature_names():
 
 def test_baked_wrapper_single_input():
     """ONNXExportWrapperBaked exposes forward(input) -> output; no config arg."""
-    from refine.export.wrapper import ONNXExportWrapperBaked
+    from restora_models.export.wrapper import ONNXExportWrapperBaked
 
     class _Toy2(nn.Module):
         def forward(self, rgb, config):
@@ -75,7 +75,7 @@ def test_baked_wrapper_single_input():
 
 def test_baked_wrapper_config_broadcasts_to_batch():
     """The baked (1, num_axes) config must broadcast cleanly to any batch."""
-    from refine.export.wrapper import ONNXExportWrapperBaked
+    from restora_models.export.wrapper import ONNXExportWrapperBaked
 
     class _Toy3(nn.Module):
         def forward(self, rgb, config):
@@ -91,7 +91,7 @@ def test_baked_wrapper_config_broadcasts_to_batch():
 
 def test_baked_wrapper_clamp_default_true():
     """Default clamp_output=True for baked wrapper — deployment-friendly."""
-    from refine.export.wrapper import ONNXExportWrapperBaked
+    from restora_models.export.wrapper import ONNXExportWrapperBaked
 
     class _Over(nn.Module):
         def forward(self, rgb, config):
@@ -106,7 +106,7 @@ def test_baked_wrapper_clamp_default_true():
 def test_baked_wrapper_signature_is_single_input():
     """forward parameter is just 'input' — exported ONNX has 1 input."""
     import inspect
-    from refine.export.wrapper import ONNXExportWrapperBaked
+    from restora_models.export.wrapper import ONNXExportWrapperBaked
     sig = inspect.signature(ONNXExportWrapperBaked.forward)
     params = list(sig.parameters.keys())
     assert params == ["self", "input"], f"expected (self, input); got {params}"
@@ -120,9 +120,9 @@ def test_exporter_uses_wrapper(tmp_path):
         import pytest
         pytest.skip("slow ONNX export, set REFINE_SLOW=1 to run")
 
-    from refine.config import ModelConfig
-    from refine.models import build_model
-    from refine.export.onnx import export_onnx_from_model
+    from restora_models.config import ModelConfig
+    from restora_models.models import build_model
+    from restora_models.export.onnx import export_onnx_from_model
 
     m = build_model(ModelConfig(type="nafnet", size="tiny", input_size=32), num_axes=5)
     out = tmp_path / "wrapped.onnx"
@@ -146,9 +146,9 @@ def test_exporter_baked_emits_single_input_onnx(tmp_path):
         import pytest
         pytest.skip("slow ONNX export, set REFINE_SLOW=1 to run")
 
-    from refine.config import ModelConfig
-    from refine.models import build_model
-    from refine.export.onnx import export_onnx_from_model
+    from restora_models.config import ModelConfig
+    from restora_models.models import build_model
+    from restora_models.export.onnx import export_onnx_from_model
 
     m = build_model(ModelConfig(type="nafnet", size="tiny", input_size=32), num_axes=5)
     out = tmp_path / "colorize.onnx"

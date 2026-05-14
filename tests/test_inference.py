@@ -1,9 +1,9 @@
 import numpy as np
 import torch
 
-from refine.config import ModelConfig
-from refine.infer.pipeline import CompoundRefinerPipeline, pad_to_multiple, unpad
-from refine.models import build_model
+from restora_models.config import ModelConfig
+from restora_models.infer.pipeline import CompoundRefinerPipeline, pad_to_multiple, unpad
+from restora_models.models import build_model
 
 
 def test_pad_unpad_round_trip():

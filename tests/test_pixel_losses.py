@@ -1,7 +1,7 @@
 import torch
 
-from refine.losses.pixel import L1RgbLoss
-from refine.losses.registry import LossContext
+from restora_models.losses.pixel import L1RgbLoss
+from restora_models.losses.registry import LossContext
 
 
 def _ctx(pred=None, clean=None):

@@ -3,8 +3,8 @@ import random
 import numpy as np
 import pytest
 
-from refine.data.degradations import colorization, denoise, deblur, jpeg, superres  # noqa: F401
-from refine.data.degradations.registry import DEGRADATION_REGISTRY
+from restora_models.data.degradations import colorization, denoise, deblur, jpeg, superres  # noqa: F401
+from restora_models.data.degradations.registry import DEGRADATION_REGISTRY
 
 
 @pytest.fixture

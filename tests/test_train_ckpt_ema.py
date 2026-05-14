@@ -3,8 +3,8 @@ import json
 import torch
 from torch import nn
 
-from refine.train.checkpoint import load_checkpoint, save_checkpoint
-from refine.train.ema import ModelEMA
+from restora_models.train.checkpoint import load_checkpoint, save_checkpoint
+from restora_models.train.ema import ModelEMA
 
 
 def test_ema_converges():
@@ -53,7 +53,7 @@ def test_ema_works_with_torch_compile():
     ema.update(compiled)
     # And the saved checkpoint state_dict must have bare keys (so it loads
     # back into either a compiled or non-compiled model).
-    from refine.train.checkpoint import save_checkpoint
+    from restora_models.train.checkpoint import save_checkpoint
     import tempfile
     from pathlib import Path
     with tempfile.TemporaryDirectory() as td:

@@ -1,6 +1,6 @@
 import torch
 
-from refine.models.color import LabToRgb, RgbToLab
+from restora_models.models.color import LabToRgb, RgbToLab
 
 
 def test_rgb_to_lab_module_shape():

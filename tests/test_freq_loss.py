@@ -1,7 +1,7 @@
 import torch
 
-from refine.losses.freq import FreqL1Loss
-from refine.losses.registry import LossContext
+from restora_models.losses.freq import FreqL1Loss
+from restora_models.losses.registry import LossContext
 
 
 def test_freq_zero_when_equal():

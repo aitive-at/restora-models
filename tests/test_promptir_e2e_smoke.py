@@ -21,12 +21,12 @@ def test_promptir_full_pipeline(tmp_path, tmp_image_dir):
     import torch
     torch.manual_seed(20260514)
 
-    from refine.config import (
+    from restora_models.config import (
         AugmentConfig, CompoundConfig, Config, DataConfig, ExportConfig,
         LoaderConfig, ModelConfig, OptimConfig, RunConfig, SchedulerConfig,
         TrainConfig, expand_loss_preset,
     )
-    from refine.train.trainer import Trainer
+    from restora_models.train.trainer import Trainer
 
     cfg = Config(
         run=RunConfig(name="smoke", output_dir=str(tmp_path), seed=0),
@@ -85,8 +85,8 @@ def test_promptir_full_pipeline(tmp_path, tmp_image_dir):
         "head_ab.weight didn't get any gradient — dual-head wiring broken"
     assert head_rgb_w.abs().max().item() > 1e-6
 
-    from refine.export.onnx import export_onnx_from_model
-    from refine.models import build_model
+    from restora_models.export.onnx import export_onnx_from_model
+    from restora_models.models import build_model
 
     mcfg = ModelConfig(**(payload["extra"]["cfg"]["model"]))
     m = build_model(mcfg, num_axes=5)

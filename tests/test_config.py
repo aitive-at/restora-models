@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from refine.config import Config, CompoundConfig, deep_merge, expand_loss_preset, load_config
+from restora_models.config import Config, CompoundConfig, deep_merge, expand_loss_preset, load_config
 
 
 def test_preset_minimal():

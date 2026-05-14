@@ -1,6 +1,6 @@
 import torch
 
-from refine.models.restormer_block import RestormerBlock
+from restora_models.models.restormer_block import RestormerBlock
 
 
 def test_forward_shape():

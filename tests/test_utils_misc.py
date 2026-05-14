@@ -1,7 +1,7 @@
 import time
 
-from refine.utils.gpu import GpuStats, gpu_stats
-from refine.utils.timing import EMA, Stopwatch
+from restora_models.utils.gpu import GpuStats, gpu_stats
+from restora_models.utils.timing import EMA, Stopwatch
 
 
 def test_gpu_stats_returns_none_or_dataclass():

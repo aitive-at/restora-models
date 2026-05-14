@@ -1,7 +1,7 @@
 import numpy as np
 import torch
 
-from refine.train.preview import render_multitask_grid, write_png_atomic
+from restora_models.train.preview import render_multitask_grid, write_png_atomic
 
 
 def test_render_grid_shape():

@@ -1,5 +1,5 @@
 [project]
-name = "refine"
+name = "restora-models"
 version = "0.1.0"
 description = "Multi-task image restoration: colorization, SR, denoise, deblur, JPEG"
 readme = "README.md"
@@ -30,14 +30,15 @@ dependencies = [
 dev = ["pytest>=8", "pytest-cov", "ruff>=0.6"]
 
 [project.scripts]
-refine = "refine.cli:app"
+restora = "restora_models.cli:app"
+restora-models = "restora_models.cli:app"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/refine"]
+packages = ["src/restora_models"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

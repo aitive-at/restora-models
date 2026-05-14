@@ -1,6 +1,6 @@
 import torch
 
-from refine.losses.registry import LOSS_REGISTRY, LossContext, build_loss
+from restora_models.losses.registry import LOSS_REGISTRY, LossContext, build_loss
 
 
 def _ctx(pred, clean):

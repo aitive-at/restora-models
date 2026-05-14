@@ -1,6 +1,6 @@
 import torch
 
-from refine.models.nafblock import NAFBlock
+from restora_models.models.nafblock import NAFBlock
 
 
 def test_nafblock_shape():

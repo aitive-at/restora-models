@@ -3,9 +3,9 @@ import os
 import pytest
 import torch
 
-from refine.config import ModelConfig
-from refine.export.onnx import export_onnx_from_model
-from refine.models import build_model
+from restora_models.config import ModelConfig
+from restora_models.export.onnx import export_onnx_from_model
+from restora_models.models import build_model
 
 
 @pytest.mark.skipif(not os.environ.get("REFINE_SLOW"), reason="slow ONNX export, set REFINE_SLOW=1")

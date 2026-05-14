@@ -7,9 +7,9 @@ from __future__ import annotations
 
 import torch
 
-from refine.config import ModelConfig
-from refine.models import build_model
-from refine.train.checkpoint import load_checkpoint
+from restora_models.config import ModelConfig
+from restora_models.models import build_model
+from restora_models.train.checkpoint import load_checkpoint
 
 
 def _save_legacy_nafnet_ckpt(tmp_path):
