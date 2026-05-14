@@ -73,10 +73,15 @@ class NAFNetMultiTask(nn.Module):
             self.skip_proj.append(nn.Conv2d(ch * 2, ch, kernel_size=1))
             self.dec_stages.append(nn.ModuleList([NAFBlock(ch, task_dim=task_dim) for _ in range(n)]))
 
-        self.head = nn.Conv2d(nf, 3, kernel_size=3, padding=1)
-        nn.init.zeros_(self.head.weight)
-        if self.head.bias is not None:
-            nn.init.zeros_(self.head.bias)
+        # Dual output: Lab delta (3 ch, all tasks) + absolute Lab ab (2 ch, colorize axis).
+        # Both zero-inited so initial output ~ input via the global Lab residual,
+        # and colorize=1 at step 0 produces gray (model learns to add color from there).
+        self.head_lab_delta = nn.Conv2d(nf, 3, kernel_size=3, padding=1)
+        self.head_ab_abs   = nn.Conv2d(nf, 2, kernel_size=3, padding=1)
+        nn.init.zeros_(self.head_lab_delta.weight)
+        nn.init.zeros_(self.head_lab_delta.bias)
+        nn.init.zeros_(self.head_ab_abs.weight)
+        nn.init.zeros_(self.head_ab_abs.bias)
 
     def forward(self, rgb: torch.Tensor, config: torch.Tensor) -> torch.Tensor:
         lab_n = self.rgb_to_lab(rgb)
@@ -101,5 +106,12 @@ class NAFNetMultiTask(nn.Module):
             for blk in stage:
                 x = blk(x, task_vec)
 
-        delta_lab_n = self.head(x)
-        return self.lab_to_rgb(lab_n + delta_lab_n)
+        delta_lab_n = self.head_lab_delta(x)
+        ab_pred    = self.head_ab_abs(x)
+
+        # Compose: Lab intermediate carries all-task signal; ab override gated by colorize axis.
+        lab_intermediate = lab_n + delta_lab_n
+        w   = config[:, 0:1].view(-1, 1, 1, 1)
+        ab_out = w * ab_pred + (1.0 - w) * lab_intermediate[:, 1:3]
+        L_out  = lab_intermediate[:, 0:1]
+        return self.lab_to_rgb(torch.cat([L_out, ab_out], dim=1))
