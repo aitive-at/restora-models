@@ -18,8 +18,8 @@ def test_large_yaml_loads():
 def test_laion_compound_loads():
     cfg = load_config(ROOT / "laion-compound.yaml", overrides={"data": {"root": "/tmp"}})
     assert cfg.compound.identity_prob == 0.05
-    assert cfg.compound.axis_probs.colorize == 0.5
-    assert cfg.compound.axis_probs.sharpen == 0.5
+    assert cfg.compound.axis_probs.colorize == 0.75
+    assert cfg.compound.axis_probs.sharpen == 0.75
 
 
 def test_promptir_laion_config_loads():
@@ -44,3 +44,13 @@ def test_nafnet_tiny_vivid_config_loads():
     assert by_name["freq_l1"].apply_to_axes == ["sharpen"]   # deblur dropped
     assert by_name["gan"].weight == 0.05
     assert set(by_name["gan"].apply_to_axes) == {"colorize", "sharpen"}
+
+
+def test_default_axis_probs_rebalanced():
+    cfg = load_config(ROOT / "default.yaml", overrides={"data": {"root": "/tmp"}})
+    ap = cfg.compound.axis_probs
+    assert ap.colorize == 0.75, f"colorize should be 0.75 (rebalanced), got {ap.colorize}"
+    assert ap.sharpen  == 0.75, f"sharpen should be 0.75 (rebalanced), got {ap.sharpen}"
+    assert ap.denoise  == 0.40
+    assert ap.dejpeg   == 0.40
+    assert ap.deblur   == 0.40
