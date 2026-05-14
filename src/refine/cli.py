@@ -27,6 +27,74 @@ def scan_data(root: Path = typer.Option(..., "--root", exists=True, file_okay=Fa
     typer.echo(f"{len(paths)} images indexed under {root}")
 
 
+@app.command(name="download")
+def download(
+    dataset: str = typer.Option(
+        "relaion2B-multi-aesthetic", "--dataset",
+        help="Which LAION-aesthetic subset: relaion2B-multi-aesthetic (17M, "
+             "default) | laion2B-en-aesthetic (51M) | relaion1B-nolang-aesthetic "
+             "(52M). NOTE: all are gated on HuggingFace; you must request "
+             "access on each dataset page individually and have HF_TOKEN set "
+             "(or have run `huggingface-cli login`)."),
+    output_dir: Path = typer.Option(
+        ..., "--output", "--out", "-o",
+        help="Target dir; created if missing. Resume works by re-running with "
+             "the same flags — both metadata and image steps skip completed work."),
+    image_size: int = typer.Option(
+        384, "--image-size",
+        help="Longest-side cap for downloaded JPEGs. 384 matches the LAION "
+             "default; bump higher if you want to keep originals (more disk)."),
+    max_shards: Optional[int] = typer.Option(
+        None, "--max-shards",
+        help="Limit to first N of 128 parquet shards. Useful for partial "
+             "downloads or smoke-testing on a small disk."),
+    processes: int = typer.Option(
+        16, "--processes",
+        help="img2dataset worker processes. 16 is a good default for a single "
+             "machine with a 1-10 Gbps link; bump up on 100Gbps cloud."),
+    threads: int = typer.Option(
+        64, "--threads",
+        help="img2dataset threads per worker (HTTP fetchers). Higher = more "
+             "concurrent connections; lower if you hit rate limits."),
+    skip_metadata: bool = typer.Option(
+        False, "--skip-metadata",
+        help="Skip the HF parquet download step (assume metadata is already present)."),
+    skip_images: bool = typer.Option(
+        False, "--skip-images",
+        help="Stop after metadata download (useful for staged deployments)."),
+) -> None:
+    """Download a LAION-aesthetic image dataset for training.
+
+    Two-step pipeline (both resumable):
+      1) Fetch the parquet metadata shards from HuggingFace.
+      2) Run img2dataset to download the actual JPEGs.
+
+    Final layout under --output:
+        metadata/<dataset>/part-NNNNN-...parquet
+        images/<dataset>/NNNNN/         (sharded JPEG tree)
+        images/<dataset>/NNNNN.parquet  (per-shard metadata)
+        images/<dataset>/NNNNN_stats.json
+    """
+    from refine.data.download import download_laion_aesthetic, list_datasets
+
+    valid = list_datasets()
+    if dataset not in valid:
+        raise typer.BadParameter(
+            f"unknown dataset {dataset!r}; options: {valid}"
+        )
+
+    try:
+        download_laion_aesthetic(
+            dataset=dataset, output_dir=output_dir,
+            image_size=image_size, max_shards=max_shards,
+            processes=processes, threads=threads,
+            skip_metadata=skip_metadata, skip_images=skip_images,
+        )
+    except RuntimeError as e:
+        typer.secho(f"[download failed] {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1) from e
+
+
 @app.command()
 def info(model: Path = typer.Option(..., "--model", exists=True, dir_okay=False)) -> None:
     """Show model metadata (type, axes, input size) from the task-map sidecar."""
