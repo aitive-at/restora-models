@@ -51,6 +51,36 @@ def save_checkpoint(
         os.replace(sidecar_tmp, sidecar)
 
 
+def _rename_legacy_keys(state_dict: dict, target_keys: set[str]) -> tuple[dict, list[str]]:
+    """Rename single-head checkpoint keys (`head.*`) to the new dual-head names.
+
+    Determines the rename target by inspecting `target_keys` (the keys of the
+    model we're loading INTO):
+      - If target has `head_lab_delta.*` (NAFNet): legacy `head.*` -> `head_lab_delta.*`
+      - If target has `dual_head.head_rgb.*` (PromptIR): legacy `head.*` -> `dual_head.head_rgb.*`
+      - Otherwise: no rename.
+
+    Returns (renamed_state_dict, list_of_rename_strings).
+    """
+    has_nafnet_dual = any(k.startswith("head_lab_delta.") for k in target_keys)
+    has_promptir_dual = any(k.startswith("dual_head.head_rgb.") for k in target_keys)
+    if not (has_nafnet_dual or has_promptir_dual):
+        return state_dict, []
+    if has_nafnet_dual and has_promptir_dual:  # defensive — both backbones in one model would be a bug
+        return state_dict, []
+    prefix = "head_lab_delta." if has_nafnet_dual else "dual_head.head_rgb."
+    renamed = {}
+    log: list[str] = []
+    for k, v in state_dict.items():
+        if k.startswith("head."):
+            new_k = prefix + k.split(".", 1)[1]
+            renamed[new_k] = v
+            log.append(f"{k} -> {new_k}")
+        else:
+            renamed[k] = v
+    return renamed, log
+
+
 def load_checkpoint(
     path: str | Path, *,
     model: nn.Module | None = None,
@@ -63,7 +93,21 @@ def load_checkpoint(
 ) -> dict[str, Any]:
     payload = torch.load(path, map_location=map_location, weights_only=False)
     if model is not None and "model" in payload:
-        _unwrap(model).load_state_dict(payload["model"])
+        target = _unwrap(model)
+        target_keys = set(target.state_dict().keys())
+        sd, renames = _rename_legacy_keys(payload["model"], target_keys)
+        if renames:
+            print(f"[load_checkpoint] renamed {len(renames)} legacy keys "
+                  f"(e.g. {renames[0]})", flush=True)
+        missing, unexpected = target.load_state_dict(sd, strict=False)
+        if missing:
+            preview = list(missing)[:3]
+            print(f"[load_checkpoint] {len(missing)} missing keys (zero-inited): "
+                  f"{preview}{'...' if len(missing) > 3 else ''}", flush=True)
+        if unexpected:
+            preview = list(unexpected)[:3]
+            print(f"[load_checkpoint] {len(unexpected)} unexpected keys (ignored): "
+                  f"{preview}{'...' if len(unexpected) > 3 else ''}", flush=True)
     if optimizer is not None and "optimizer" in payload:
         optimizer.load_state_dict(payload["optimizer"])
     if optimizer_d is not None and "optimizer_d" in payload:
