@@ -56,6 +56,10 @@ def download(
         64, "--threads",
         help="img2dataset threads per worker (HTTP fetchers). Higher = more "
              "concurrent connections; lower if you hit rate limits."),
+    progress_every_s: float = typer.Option(
+        5.0, "--progress-every-s",
+        help="Print download progress (cumulative count + rate) every N seconds. "
+             "Set higher for less log noise on long runs."),
     skip_metadata: bool = typer.Option(
         False, "--skip-metadata",
         help="Skip the HF parquet download step (assume metadata is already present)."),
@@ -88,6 +92,7 @@ def download(
             dataset=dataset, output_dir=output_dir,
             image_size=image_size, max_shards=max_shards,
             processes=processes, threads=threads,
+            progress_every_s=progress_every_s,
             skip_metadata=skip_metadata, skip_images=skip_images,
         )
     except RuntimeError as e:

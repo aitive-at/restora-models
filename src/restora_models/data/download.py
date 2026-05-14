@@ -13,14 +13,16 @@ Two-step pipeline:
 The HF token is read from `~/.cache/huggingface/token` by `huggingface_hub`
 automatically, or you can set `HF_TOKEN` / `HUGGINGFACE_HUB_TOKEN`.
 
-See `docs/integration/laion-download.md` for the deployment recipe and
-B200 server checklist.
+See `docs/integration/laion-download.md` for the deployment recipe.
 """
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
 import sys
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -152,6 +154,55 @@ def download_parquets(
     return paths
 
 
+def _count_downloaded_images(output_dir: Path) -> tuple[int, int]:
+    """Quick estimate of (completed_shards, current_active_shard_file_count).
+
+    Counts `*_stats.json` files (the per-shard completion sentinels) and
+    the highest-numbered shard dir's current `.jpg` count. Fast even at
+    millions of files because it doesn't walk the full tree.
+    """
+    completed = 0
+    active_files = 0
+    try:
+        for entry in os.scandir(output_dir):
+            if entry.name.endswith("_stats.json"):
+                completed += 1
+        # Find the highest-numbered shard dir (may still be being written)
+        shard_dirs = sorted(
+            (e for e in os.scandir(output_dir) if e.is_dir() and e.name.isdigit()),
+            key=lambda e: e.name,
+        )
+        if shard_dirs:
+            latest = shard_dirs[-1]
+            active_files = sum(1 for e in os.scandir(latest.path)
+                               if e.name.endswith(".jpg"))
+    except FileNotFoundError:
+        pass
+    return completed, active_files
+
+
+def _progress_reporter(output_dir: Path, shard_size: int,
+                       stop: threading.Event, interval_s: float = 5.0) -> None:
+    """Background thread: prints download progress every interval_s seconds."""
+    last_total = 0
+    last_t = time.time()
+    while not stop.is_set():
+        completed, active = _count_downloaded_images(output_dir)
+        total = completed * shard_size + active
+        now = time.time()
+        dt = max(now - last_t, 1e-3)
+        rate = (total - last_total) / dt
+        print(
+            f"[progress] {total:,} images "
+            f"(+{total - last_total:,} in {dt:.0f}s = {rate:.0f} img/s, "
+            f"{completed} shards complete)",
+            flush=True,
+        )
+        last_total, last_t = total, now
+        # Sleep responsively so Ctrl-C is fast
+        stop.wait(timeout=interval_s)
+
+
 def run_img2dataset(
     metadata_dir: Path,
     output_dir: Path,
@@ -161,6 +212,8 @@ def run_img2dataset(
     threads: int = 64,
     timeout_s: int = 10,
     enable_wandb: bool = False,
+    progress_every_s: float = 5.0,
+    number_sample_per_shard: int = 10_000,
     save_additional_columns: tuple[str, ...] = (
         "similarity", "hash", "punsafe", "pwatermark", "aesthetic",
     ),
@@ -173,13 +226,20 @@ def run_img2dataset(
     a sharded "files" layout into `output_dir`:
 
         output_dir/
-            00000/000000000.jpg
+            00000/000000000.jpg          <- real JPEG files (one per image)
+            00000/000000000.json         <- per-image caption + metadata
             00000/000000001.jpg
             ...
-            00000.parquet                <- per-shard metadata
-            00000_stats.json             <- per-shard completion stats (the
-                                            resume sentinel)
+            00000.parquet                <- per-shard manifest
+            00000_stats.json             <- per-shard completion sentinel
             ...
+
+    A background thread reports progress every `progress_every_s` seconds:
+
+        [progress] 12,345 images (+2,170 in 5s = 434 img/s, 1 shards complete)
+
+    The img2dataset subprocess also writes its own per-shard completion
+    lines to stdout. Both are visible.
     """
     metadata_dir = Path(metadata_dir)
     output_dir = Path(output_dir)
@@ -196,14 +256,13 @@ def run_img2dataset(
 
     cmd = [
         # Invoke via `uv run` so the right venv is activated regardless of
-        # whether the user has the venv's bin on PATH. Mirrors the pattern
-        # in ~/laion-download/run.sh (the user's original setup).
+        # whether the user has the venv's bin on PATH.
         "uv", "run", "img2dataset",
         "--url_list", str(metadata_dir),
         "--input_format", "parquet",
         "--url_col", "URL",
         "--caption_col", "TEXT",
-        "--output_format", "files",
+        "--output_format", "files",           # individual JPEG files, NOT webdataset tars
         "--output_folder", str(output_dir),
         "--processes_count", str(processes),
         "--thread_count", str(threads),
@@ -212,12 +271,39 @@ def run_img2dataset(
         "--resize_mode=keep_ratio",
         "--skip_reencode=True",
         "--timeout", str(timeout_s),
+        "--number_sample_per_shard", str(number_sample_per_shard),
         "--save_additional_columns", additional_cols_json,
         "--enable_wandb", str(enable_wandb),
     ]
-    print(f"[img2dataset] {' '.join(cmd)}", flush=True)
-    # Propagate exit code; stream stdout/stderr live for visibility
-    result = subprocess.run(cmd, check=False)
+
+    # Subprocess env tweaks:
+    # - NO_ALBUMENTATIONS_UPDATE silences the "newer version available"
+    #   warning that albumentations prints on every import.
+    # - PYTHONUNBUFFERED makes img2dataset's per-shard progress lines
+    #   appear immediately instead of after a buffer flush (matters for
+    #   tail-f-style log watching during long runs).
+    env = os.environ.copy()
+    env["NO_ALBUMENTATIONS_UPDATE"] = "1"
+    env["PYTHONUNBUFFERED"] = "1"
+
+    print(f"[img2dataset] writing JPEGs to {output_dir}", flush=True)
+    print(f"[img2dataset] cmd: {' '.join(cmd)}", flush=True)
+
+    # Start the progress reporter thread
+    stop_flag = threading.Event()
+    reporter = threading.Thread(
+        target=_progress_reporter,
+        args=(output_dir, number_sample_per_shard, stop_flag, progress_every_s),
+        daemon=True,
+    )
+    reporter.start()
+
+    try:
+        result = subprocess.run(cmd, env=env, check=False)
+    finally:
+        stop_flag.set()
+        reporter.join(timeout=2.0)
+
     if result.returncode != 0:
         raise RuntimeError(
             f"img2dataset exited {result.returncode}; check output above for the failing shard"
@@ -232,6 +318,7 @@ def download_laion_aesthetic(
     max_shards: int | None = None,
     processes: int = 16,
     threads: int = 64,
+    progress_every_s: float = 5.0,
     skip_metadata: bool = False,
     skip_images: bool = False,
 ) -> None:
@@ -273,6 +360,7 @@ def download_laion_aesthetic(
         run_img2dataset(
             metadata_dir, images_dir,
             image_size=image_size, processes=processes, threads=threads,
+            progress_every_s=progress_every_s,
         )
     else:
         print(f"[2/2] skipped (--skip-images)", flush=True)
