@@ -46,6 +46,20 @@ def test_nafnet_tiny_vivid_config_loads():
     assert set(by_name["gan"].apply_to_axes) == {"colorize", "sharpen"}
 
 
+def test_nafnet_tiny_vivid_nogan_config_loads():
+    """Diagnostic A/B against nafnet-tiny-vivid: same recipe, GAN removed."""
+    cfg = load_config(ROOT / "nafnet-tiny-vivid-nogan.yaml")
+    assert cfg.model.type == "nafnet"
+    assert cfg.model.size == "tiny"
+    names = [l.name for l in cfg.losses]
+    assert "gan" not in names, "gan should be absent in the nogan variant"
+    # Other vivid recipe ingredients still present
+    by_name = {l.name: l for l in cfg.losses}
+    assert by_name["chroma_lab"].weight == 0.25
+    assert by_name["freq_l1"].weight == 0.40
+    assert by_name["colorfulness"].weight == 0.10
+
+
 def test_data_root_expands_tilde():
     """Regression: data.root in YAML can use ~ — it must expand to $HOME at
     load time so Path() / directory walks work."""
