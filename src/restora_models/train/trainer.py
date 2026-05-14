@@ -21,6 +21,10 @@ from restora_models.data.degradations import denoise as _denoise  # noqa: F401
 from restora_models.data.degradations import jpeg as _jpeg  # noqa: F401
 from restora_models.data.degradations import superres as _superres  # noqa: F401
 from restora_models.data.degradations.registry import build_degradation
+from restora_models.data.video import VideoPairDataset
+from restora_models.data.video_compound import (
+    VideoCompoundDegradationWrapper, collate_video_compound,
+)
 from restora_models.losses import LossContext, LossSet
 from restora_models.losses.gan import discriminator_loss
 from restora_models.losses.metrics import psnr
@@ -168,6 +172,36 @@ class Trainer:
         else:
             self.val_ds = train_ds
 
+        # Video pair loader (optional)
+        self.video_loader: DataLoader | None = None
+        self._video_iter = None
+        self.video_batch_prob = 0.0
+        vcfg = cfg.video
+        if vcfg.enabled:
+            if not vcfg.root:
+                raise RuntimeError("video.enabled=True but video.root is empty")
+            video_clean = VideoPairDataset(
+                root=Path(vcfg.root), target_size=cfg.model.input_size,
+                max_skip=vcfg.max_skip, hflip_prob=vcfg.hflip_prob,
+                seed=cfg.run.seed, require_flow=vcfg.require_flow,
+            )
+            video_train = VideoCompoundDegradationWrapper(
+                video_clean, axis_probs=axis_probs,
+                identity_prob=identity_prob,
+                degradation_params=deg_params, seed=cfg.run.seed,
+            )
+            v_bs = vcfg.batch_size if (vcfg.batch_size and vcfg.batch_size != "auto") else int(bs)
+            self.video_loader = DataLoader(
+                video_train, batch_size=int(v_bs), shuffle=True,
+                num_workers=vcfg.num_workers,
+                pin_memory=cfg.data.loader.pin_memory and self.device.type == "cuda",
+                persistent_workers=vcfg.num_workers > 0,
+                prefetch_factor=2 if vcfg.num_workers > 0 else None,
+                collate_fn=collate_video_compound, drop_last=True,
+            )
+            self._video_iter = _cycle(self.video_loader)
+            self.video_batch_prob = float(vcfg.video_batch_prob)
+
         if cfg.train.compile and self.device.type == "cuda":
             self.model = torch.compile(self.model, mode=cfg.train.compile_mode)
 
@@ -187,8 +221,77 @@ class Trainer:
             return nullcontext()
         return torch.amp.autocast(self.device.type, dtype=self.amp_dtype)
 
+    def _compute_weight_overrides(self) -> dict[str, float] | None:
+        """Per-step loss-weight multipliers. Currently: linear GAN warmup.
+
+        Returns {"gan": factor} where factor ∈ [0, 1]:
+            - 0 before `gan_warmup_start`
+            - linearly ramps from 0 to 1 over `gan_warmup_steps` steps
+            - 1 after that
+        Returns None if no overrides apply this step (avoids dict alloc).
+        """
+        warmup_steps = self.cfg.train.gan_warmup_steps
+        if warmup_steps <= 0:
+            return None
+        start = self.cfg.train.gan_warmup_start
+        if self.step < start:
+            factor = 0.0
+        elif self.step >= start + warmup_steps:
+            return None    # full weight; no override needed
+        else:
+            factor = (self.step - start) / float(warmup_steps)
+        return {"gan": factor}
+
     def run_one_step(self) -> dict[str, float]:
+        # Per-step Bernoulli: with prob video_batch_prob, use a video pair
+        # batch (dual forward + temporal_pair loss). Otherwise the regular
+        # image batch. Image and video paths share the same loss stack and
+        # the same model; only the LossContext differs.
+        if (self._video_iter is not None
+                and torch.rand(()).item() < self.video_batch_prob):
+            return self._train_step_video(next(self._video_iter))
         return self._train_step(next(self._iter))
+
+    def _g_backward_and_step(self, total_g: torch.Tensor
+                              ) -> tuple[bool, torch.Tensor]:
+        """Backward + clip + opt-step for the generator. Returns
+        (step_skipped, grad_norm)."""
+        step_skipped = False
+        if self.scaler is not None:
+            self.scaler.scale(total_g).backward()
+            self.scaler.unscale_(self.opt_g)
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.cfg.train.clip_grad_norm)
+            if torch.isfinite(grad_norm):
+                self.scaler.step(self.opt_g)
+            else:
+                step_skipped = True; self.opt_g.zero_grad(set_to_none=True)
+            self.scaler.update()
+        else:
+            total_g.backward()
+            grad_norm = torch.nn.utils.clip_grad_norm_(
+                self.model.parameters(), self.cfg.train.clip_grad_norm)
+            if torch.isfinite(grad_norm):
+                self.opt_g.step()
+            else:
+                step_skipped = True; self.opt_g.zero_grad(set_to_none=True)
+        return step_skipped, grad_norm
+
+    def _disc_step(self, clean: torch.Tensor, pred: torch.Tensor) -> float | None:
+        """Train discriminator on one (clean, pred) batch. Returns d_loss
+        or None when no discriminator is present."""
+        if self.disc is None or self.opt_d is None:
+            return None
+        self.opt_d.zero_grad(set_to_none=True)
+        with self._amp_ctx():
+            d_loss = discriminator_loss(self.disc, clean.detach(),
+                                         pred.detach(), self.gan_type)
+        if self.scaler is not None:
+            self.scaler.scale(d_loss).backward(); self.scaler.unscale_(self.opt_d)
+            self.scaler.step(self.opt_d); self.scaler.update()
+        else:
+            d_loss.backward(); self.opt_d.step()
+        return float(d_loss.detach())
 
     def _train_step(self, batch: dict) -> dict[str, float]:
         clean = batch["clean"].to(self.device, non_blocking=True, memory_format=self.memory_format)
@@ -201,7 +304,8 @@ class Trainer:
             pred = self.model(degraded, config)
             ctx = LossContext(pred_rgb=pred, clean_rgb=clean, degraded_rgb=degraded,
                               config=config, axes_active=axes, discriminator=self.disc)
-            total_g, log_g = self.loss_set(ctx)
+            weight_overrides = self._compute_weight_overrides()
+            total_g, log_g = self.loss_set(ctx, weight_overrides=weight_overrides)
             if not torch.isfinite(total_g):
                 self.opt_g.zero_grad(set_to_none=True)
                 self.scheduler_g.step()
@@ -214,25 +318,7 @@ class Trainer:
                         "Resume from last.pt and try amp=fp32 or lower lr.")
                 return {"total_g": float(total_g.detach()), **log_g, "_skipped": 1.0}
 
-        step_skipped = False
-        if self.scaler is not None:
-            self.scaler.scale(total_g).backward()
-            self.scaler.unscale_(self.opt_g)
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(),
-                                                       self.cfg.train.clip_grad_norm)
-            if torch.isfinite(grad_norm):
-                self.scaler.step(self.opt_g)
-            else:
-                step_skipped = True; self.opt_g.zero_grad(set_to_none=True)
-            self.scaler.update()
-        else:
-            total_g.backward()
-            grad_norm = torch.nn.utils.clip_grad_norm_(self.model.parameters(),
-                                                       self.cfg.train.clip_grad_norm)
-            if torch.isfinite(grad_norm):
-                self.opt_g.step()
-            else:
-                step_skipped = True; self.opt_g.zero_grad(set_to_none=True)
+        step_skipped, grad_norm = self._g_backward_and_step(total_g)
 
         if step_skipped:
             self._consecutive_nan += 1
@@ -248,7 +334,6 @@ class Trainer:
         if step_skipped:
             log["_skipped_grad"] = 1.0
 
-        # Per-axis PSNR
         with torch.no_grad():
             per_sample = psnr(pred, clean)
             axis_to_idx = {a: i for i, a in enumerate(AXES)}
@@ -259,22 +344,100 @@ class Trainer:
                 if mask.any():
                     self._last_per_task_psnr[axis] = float(per_sample[mask].mean().item())
 
-        if self.disc is not None and self.opt_d is not None:
-            self.opt_d.zero_grad(set_to_none=True)
-            with self._amp_ctx():
-                d_loss = discriminator_loss(self.disc, clean.detach(), pred.detach(), self.gan_type)
-            if self.scaler is not None:
-                self.scaler.scale(d_loss).backward(); self.scaler.unscale_(self.opt_d)
-                self.scaler.step(self.opt_d); self.scaler.update()
-            else:
-                d_loss.backward(); self.opt_d.step()
-            log["d_total"] = float(d_loss.detach())
+        d_loss = self._disc_step(clean, pred)
+        if d_loss is not None:
+            log["d_total"] = d_loss
 
         if self.ema is not None:
             self.ema.update(self.model)
         self.scheduler_g.step()
         self.step += 1
         self._samples_window += degraded.shape[0]
+        return log
+
+    def _train_step_video(self, batch: dict) -> dict[str, float]:
+        """Video pair step: forward model on both frames, compute losses
+        with the temporal_pair signal populated, backprop through both
+        outputs.
+
+        The primary (frame_t) supplies all reconstruction losses; the
+        secondary (frame_t+k) supplies the temporal target. Both forward
+        passes are concatenated into a single 2B forward for efficiency.
+        """
+        ml = self.memory_format
+        clean_t   = batch["clean_t"].to(self.device, non_blocking=True, memory_format=ml)
+        deg_t     = batch["degraded_t"].to(self.device, non_blocking=True, memory_format=ml)
+        clean_tk  = batch["clean_tk"].to(self.device, non_blocking=True, memory_format=ml)
+        deg_tk    = batch["degraded_tk"].to(self.device, non_blocking=True, memory_format=ml)
+        flow      = batch["flow_t_tk"].to(self.device, non_blocking=True)
+        config    = batch["config"].to(self.device, non_blocking=True)
+        axes      = batch["axes"]
+        B = deg_t.shape[0]
+
+        self.opt_g.zero_grad(set_to_none=True)
+        with self._amp_ctx():
+            deg_pair = torch.cat([deg_t, deg_tk], dim=0)
+            cfg_pair = torch.cat([config, config], dim=0)
+            pred_pair = self.model(deg_pair, cfg_pair)
+            pred_t, pred_tk = pred_pair[:B], pred_pair[B:]
+
+            ctx = LossContext(
+                pred_rgb=pred_t, clean_rgb=clean_t, degraded_rgb=deg_t,
+                config=config, axes_active=axes, discriminator=self.disc,
+                secondary_pred_rgb=pred_tk, flow_t_to_secondary=flow,
+            )
+            weight_overrides = self._compute_weight_overrides()
+            total_g, log_g = self.loss_set(ctx, weight_overrides=weight_overrides)
+            if not torch.isfinite(total_g):
+                self.opt_g.zero_grad(set_to_none=True)
+                self.scheduler_g.step()
+                self.step += 1
+                self._samples_window += 2 * B
+                self._consecutive_nan += 1
+                if self._consecutive_nan >= 20:
+                    raise RuntimeError(
+                        f"20 consecutive non-finite losses at step {self.step}. "
+                        "Resume from last.pt and try amp=fp32 or lower lr.")
+                return {"total_g": float(total_g.detach()), **log_g, "_skipped": 1.0}
+
+        step_skipped, grad_norm = self._g_backward_and_step(total_g)
+
+        if step_skipped:
+            self._consecutive_nan += 1
+        else:
+            self._consecutive_nan = 0
+        if self._consecutive_nan >= 20:
+            raise RuntimeError(
+                f"20 consecutive non-finite gradient steps at step {self.step}. "
+                "Resume from last.pt and try amp=fp32 or lower lr.")
+
+        log: dict[str, float] = {"total_g": float(total_g.detach()), **log_g,
+                                 "grad_norm": float(grad_norm), "_video": 1.0}
+        if step_skipped:
+            log["_skipped_grad"] = 1.0
+
+        with torch.no_grad():
+            per_sample = psnr(pred_t, clean_t)
+            axis_to_idx = {a: i for i, a in enumerate(AXES)}
+            self._last_per_task_psnr = {}
+            for axis in AXES:
+                ax_idx = axis_to_idx[axis]
+                mask = config[:, ax_idx] >= 0.5
+                if mask.any():
+                    self._last_per_task_psnr[axis] = float(per_sample[mask].mean().item())
+
+        # Discriminator sees both frames' predictions vs both cleans for
+        # twice the data per video step.
+        clean_pair = torch.cat([clean_t, clean_tk], dim=0)
+        d_loss = self._disc_step(clean_pair, pred_pair)
+        if d_loss is not None:
+            log["d_total"] = d_loss
+
+        if self.ema is not None:
+            self.ema.update(self.model)
+        self.scheduler_g.step()
+        self.step += 1
+        self._samples_window += 2 * B
         return log
 
     def fit(self) -> None:

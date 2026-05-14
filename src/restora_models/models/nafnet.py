@@ -6,6 +6,7 @@ from torch import nn
 
 from restora_models.config import ModelConfig
 from .color import LabToRgb, RgbToLab
+from .heads import AdversarialRefineHead
 from .nafblock import NAFBlock
 from .registry import register_model
 from .config_embed import ConfigEmbed
@@ -83,6 +84,19 @@ class NAFNetMultiTask(nn.Module):
         nn.init.zeros_(self.head_ab_abs.weight)
         nn.init.zeros_(self.head_ab_abs.bias)
 
+        # Optional adversarial refinement head — sits AFTER the deterministic
+        # dual-head output. Initialized so its delta contribution is tiny;
+        # the GAN warmup in the trainer ramps the adversarial gradient in
+        # gradually. Enabled by `model.adversarial_refine: true` in config.
+        if cfg.adversarial_refine:
+            self.refine_head: nn.Module | None = AdversarialRefineHead(
+                feat_dim=nf, num_axes=num_axes,
+                hidden_dim=cfg.refine_hidden_dim or 128,
+                n_blocks=cfg.refine_n_blocks or 8,
+            )
+        else:
+            self.refine_head = None
+
     def forward(self, rgb: torch.Tensor, config: torch.Tensor) -> torch.Tensor:
         lab_n = self.rgb_to_lab(rgb)
         task_vec = self.task_embed(config)
@@ -106,6 +120,10 @@ class NAFNetMultiTask(nn.Module):
             for blk in stage:
                 x = blk(x, task_vec)
 
+        # x is now the final-resolution decoder feature tensor (nf channels).
+        # Save for the optional refine head.
+        features = x
+
         delta_lab_n = self.head_lab_delta(x)
         ab_pred    = self.head_ab_abs(x)
 
@@ -114,4 +132,8 @@ class NAFNetMultiTask(nn.Module):
         w   = config[:, 0:1].view(-1, 1, 1, 1)
         ab_out = w * ab_pred + (1.0 - w) * lab_intermediate[:, 1:3]
         L_out  = lab_intermediate[:, 0:1]
-        return self.lab_to_rgb(torch.cat([L_out, ab_out], dim=1))
+        coarse_rgb = self.lab_to_rgb(torch.cat([L_out, ab_out], dim=1))
+
+        if self.refine_head is not None:
+            return self.refine_head(features, coarse_rgb, config)
+        return coarse_rgb

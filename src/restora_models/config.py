@@ -25,6 +25,13 @@ class ModelConfig(BaseModel):
     prompt_n: int | None = None
     prompt_dim: int | None = None
     prompt_hw: int | None = None
+    # Adversarial refine head — optional residual generator that sits after
+    # the deterministic dual-head output. Trained with adversarial + perceptual
+    # losses for improved perceptual quality on the hard ill-posed tasks
+    # (colorize, sharpen). Default OFF for backward compat.
+    adversarial_refine: bool = False
+    refine_hidden_dim: int | None = None    # default 128 if None
+    refine_n_blocks: int | None = None      # default 8 if None
 
 
 # ---------- data -----------------------------------------------------------
@@ -173,6 +180,12 @@ class TrainConfig(BaseModel):
     ckpt_every_steps: int = 5000
     val_every_steps: int = 5000
     log_every_steps: int = 25
+    # GAN warmup: linearly ramp the gan loss weight from 0 to its configured
+    # value over `gan_warmup_steps` steps starting at `gan_warmup_start`.
+    # Critical for stability — adding GAN from cold has been observed to
+    # destabilize training (see 2026-05-14 iter-N experiments). 0 disables.
+    gan_warmup_start: int = 0
+    gan_warmup_steps: int = 10000
 
 
 class ExportConfig(BaseModel):
@@ -180,6 +193,30 @@ class ExportConfig(BaseModel):
     opset: int = 17
     simplify: bool = True
     dynamic_hw: bool = False
+
+
+class VideoConfig(BaseModel):
+    """Optional video-pair training for temporal consistency.
+
+    When `enabled`, the trainer builds a VideoPairDataset over `root` and
+    on each training step draws Bernoulli(video_batch_prob): if True, the
+    batch comes from the video loader (paired frames + flow), otherwise
+    the regular image loader. Video batches populate the temporal_pair
+    loss; image batches are unchanged.
+    """
+    enabled: bool = False
+    root: str = ""
+    max_skip: int = 5
+    hflip_prob: float = 0.5
+    require_flow: bool = True
+    video_batch_prob: float = 0.25
+    batch_size: int | Literal["auto"] = 0    # 0 = match image loader bs
+    num_workers: int = 4
+
+    @field_validator("root")
+    @classmethod
+    def _expand_root(cls, v: str) -> str:
+        return os.path.expandvars(os.path.expanduser(v)) if v else v
 
 
 class RunConfig(BaseModel):
@@ -199,6 +236,7 @@ class Config(BaseModel):
     scheduler: SchedulerConfig = SchedulerConfig()
     train: TrainConfig = TrainConfig()
     export: ExportConfig = ExportConfig()
+    video: VideoConfig = VideoConfig()
 
 
 # ---------- YAML loader ---------------------------------------------------

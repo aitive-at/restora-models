@@ -11,6 +11,7 @@ from . import freq as _freq  # noqa: F401
 from . import gan as _gan  # noqa: F401
 from . import perceptual as _perceptual  # noqa: F401
 from . import pixel as _pixel  # noqa: F401
+from . import temporal as _temporal  # noqa: F401
 from .gan import GeneratorGANLoss
 from .registry import LossContext, build_loss
 
@@ -39,13 +40,23 @@ class LossSet:
             loss.to(device, dtype) if dtype is not None else loss.to(device)
         return self
 
-    def __call__(self, ctx: LossContext) -> tuple[torch.Tensor, dict[str, float]]:
+    def __call__(self, ctx: LossContext,
+                 weight_overrides: dict[str, float] | None = None
+                 ) -> tuple[torch.Tensor, dict[str, float]]:
+        """Compute total weighted loss.
+
+        `weight_overrides` lets the trainer dynamically scale specific
+        loss weights — used for GAN warmup (ramping the 'gan' loss weight
+        from 0 → configured value over N steps).
+        """
         from restora_models.data.compound import AXES
         axis_to_idx = {a: i for i, a in enumerate(AXES)}
 
         total: torch.Tensor | float = 0.0
         log: dict[str, float] = {}
         for weight, loss, mask in self.entries:
+            if weight_overrides is not None and loss.name in weight_overrides:
+                weight = float(weight) * float(weight_overrides[loss.name])
             if mask is None:
                 val = loss(ctx)
             else:
@@ -68,6 +79,10 @@ class LossSet:
                     config=ctx.config.index_select(0, idx_t),
                     axes_active=[ctx.axes_active[i] for i in idxs],
                     discriminator=ctx.discriminator,
+                    secondary_pred_rgb=(ctx.secondary_pred_rgb.index_select(0, idx_t)
+                                        if ctx.secondary_pred_rgb is not None else None),
+                    flow_t_to_secondary=(ctx.flow_t_to_secondary.index_select(0, idx_t)
+                                         if ctx.flow_t_to_secondary is not None else None),
                 )
                 val = loss(sub_ctx)
             total = total + weight * val

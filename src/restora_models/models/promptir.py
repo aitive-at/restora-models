@@ -103,8 +103,18 @@ class PromptIR(nn.Module):
 
         self.refinement = _stack(dim, ref_n, heads[0], task_dim)
 
-        from .heads import DualOutputHead
+        from .heads import AdversarialRefineHead, DualOutputHead
         self.dual_head = DualOutputHead(in_dim=dim)
+        # Optional adversarial refine head (same as NAFNet — feat_dim=dim
+        # since PromptIR's final-resolution feature has `dim` channels).
+        if cfg.adversarial_refine:
+            self.refine_head: nn.Module | None = AdversarialRefineHead(
+                feat_dim=dim, num_axes=num_axes,
+                hidden_dim=cfg.refine_hidden_dim or 128,
+                n_blocks=cfg.refine_n_blocks or 8,
+            )
+        else:
+            self.refine_head = None
 
     @staticmethod
     def _run(stack: nn.ModuleList, x: torch.Tensor, task: torch.Tensor) -> torch.Tensor:
@@ -138,4 +148,7 @@ class PromptIR(nn.Module):
         d = self._run(self.dec_l1, d, task)
 
         d = self._run(self.refinement, d, task)
-        return self.dual_head(features=d, rgb_input=rgb, config=config)
+        coarse = self.dual_head(features=d, rgb_input=rgb, config=config)
+        if self.refine_head is not None:
+            return self.refine_head(d, coarse, config)
+        return coarse
