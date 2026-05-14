@@ -93,3 +93,29 @@ def test_onnx_export_parity_all_configs(tmp_path):
                            parity_atol=1e-1, dynamic_hw=False,
                            task_map={"model_type": "promptir"})
     assert out.exists()
+
+
+def test_promptir_has_dual_head():
+    cfg = ModelConfig(type="promptir", size="tiny", input_size=32)
+    m = build_model(cfg, num_axes=5)
+    assert hasattr(m, "dual_head"), "promptir.dual_head missing"
+    from refine.models.heads import DualOutputHead
+    assert isinstance(m.dual_head, DualOutputHead)
+    assert not hasattr(m, "head"), \
+        "self.head must be replaced by self.dual_head, not kept alongside"
+
+
+def test_promptir_colorize_off_preserves_input():
+    """Re-test of the identity property under the dual-head architecture.
+    With colorize=0 and untrained head_rgb (zero-init), output should be
+    very close to input."""
+    cfg = ModelConfig(type="promptir", size="tiny", input_size=32)
+    m = build_model(cfg, num_axes=5)
+    m.train(False)
+    torch.manual_seed(0)
+    x = torch.rand(1, 3, 32, 32)
+    c = torch.zeros(1, 5)
+    with torch.no_grad():
+        out = m(x, c)
+    diff = (out - x).abs().mean().item()
+    assert diff < 0.1, f"identity-config output drifted: diff={diff}"
