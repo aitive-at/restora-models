@@ -60,6 +60,12 @@ def download(
         5.0, "--progress-every-s",
         help="Print download progress (cumulative count + rate) every N seconds. "
              "Set higher for less log noise on long runs."),
+    timeout_s: int = typer.Option(
+        5, "--timeout-s",
+        help="Per-URL HTTP timeout. LAION URLs are old; ~15-20%% are dead. "
+             "Lower = drop dead URLs faster, higher throughput overall. "
+             "Trade-off: too low and some slow-but-live servers get skipped. "
+             "5s is the sweet spot in practice."),
     skip_metadata: bool = typer.Option(
         False, "--skip-metadata",
         help="Skip the HF parquet download step (assume metadata is already present)."),
@@ -92,6 +98,7 @@ def download(
             dataset=dataset, output_dir=output_dir,
             image_size=image_size, max_shards=max_shards,
             processes=processes, threads=threads,
+            timeout_s=timeout_s,
             progress_every_s=progress_every_s,
             skip_metadata=skip_metadata, skip_images=skip_images,
         )

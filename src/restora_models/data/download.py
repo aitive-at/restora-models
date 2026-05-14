@@ -210,7 +210,9 @@ def run_img2dataset(
     image_size: int = 384,
     processes: int = 16,
     threads: int = 64,
-    timeout_s: int = 10,
+    timeout_s: int = 5,                  # matches user's prior tuning; LAION
+                                         # has ~15-20% dead URLs and waiting
+                                         # 10s on each one halves throughput
     enable_wandb: bool = False,
     progress_every_s: float = 5.0,
     number_sample_per_shard: int = 10_000,
@@ -318,6 +320,7 @@ def download_laion_aesthetic(
     max_shards: int | None = None,
     processes: int = 16,
     threads: int = 64,
+    timeout_s: int = 5,
     progress_every_s: float = 5.0,
     skip_metadata: bool = False,
     skip_images: bool = False,
@@ -360,6 +363,7 @@ def download_laion_aesthetic(
         run_img2dataset(
             metadata_dir, images_dir,
             image_size=image_size, processes=processes, threads=threads,
+            timeout_s=timeout_s,
             progress_every_s=progress_every_s,
         )
     else:
