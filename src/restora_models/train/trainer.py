@@ -215,6 +215,7 @@ class Trainer:
         self._samples_window = 0
         self._preview_lock = threading.Lock()
         self._consecutive_nan = 0
+        self._last_preview_step = -1
 
     def _amp_ctx(self):
         if self.amp_dtype is None:
@@ -543,10 +544,18 @@ class Trainer:
                                           cell_size=self.cfg.model.input_size)
             latest = self.output_dir / "samples" / "latest.png"
             write_png_atomic(latest, grid)
-            if (self.cfg.train.preview_history_every > 0
-                    and (self.step % self.cfg.train.preview_history_every == 0)):
-                hist = self.output_dir / "samples" / f"iter_{self.step:07d}.png"
-                write_png_atomic(hist, grid)
+            # History snapshot: write iter_N.png when this preview straddles
+            # a multiple of preview_history_every since the last preview.
+            # The old "step % N == 0" check almost never fired (the chance
+            # of a preview moment landing exactly on a multiple is small),
+            # so most history files were silently dropped.
+            phe = self.cfg.train.preview_history_every
+            if phe > 0:
+                crossed = (self.step // phe) > max(0, self._last_preview_step // phe)
+                if crossed or self.step == self.cfg.train.total_steps:
+                    hist = self.output_dir / "samples" / f"iter_{self.step:07d}.png"
+                    write_png_atomic(hist, grid)
+            self._last_preview_step = self.step
             try:
                 rel = latest.relative_to(self.output_dir)
             except ValueError:
