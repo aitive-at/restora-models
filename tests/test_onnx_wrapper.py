@@ -52,3 +52,30 @@ def test_signature_names():
     params = list(sig.parameters.keys())
     assert params[1] == "input", f"first arg must be 'input', got {params[1]!r}"
     assert params[2] == "config", f"second arg must be 'config', got {params[2]!r}"
+
+
+def test_exporter_uses_wrapper(tmp_path):
+    """Smoke: full export through export_onnx_from_model produces an ONNX
+    whose input names are exactly ['input', 'config'] and output is 'output'."""
+    import os
+    if not os.environ.get("REFINE_SLOW"):
+        import pytest
+        pytest.skip("slow ONNX export, set REFINE_SLOW=1 to run")
+
+    from refine.config import ModelConfig
+    from refine.models import build_model
+    from refine.export.onnx import export_onnx_from_model
+
+    m = build_model(ModelConfig(type="nafnet", size="tiny", input_size=32), num_axes=5)
+    out = tmp_path / "wrapped.onnx"
+    export_onnx_from_model(
+        m, num_axes=5, input_size=32, export_path=out,
+        opset=17, simplify=False, verify_parity=True, parity_atol=1e-3,
+        dynamic_hw=False, task_map=None, precision="fp32",
+    )
+    import onnx
+    om = onnx.load(str(out))
+    input_names = sorted([i.name for i in om.graph.input])
+    output_names = sorted([o.name for o in om.graph.output])
+    assert input_names == ["config", "input"]
+    assert output_names == ["output"]

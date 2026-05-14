@@ -111,8 +111,14 @@ def export_onnx_from_model(
         dynamic_axes["input"][2] = "height"; dynamic_axes["input"][3] = "width"
         dynamic_axes["output"][2] = "height"; dynamic_axes["output"][3] = "width"
 
+    # Pin the ONNX contract behind a stable wrapper module so future
+    # backbone changes can't drift the exported graph's I/O signature.
+    from .wrapper import ONNXExportWrapper
+    export_model = ONNXExportWrapper(model)
+    export_model.train(False)
+
     torch.onnx.export(
-        model, (dummy_rgb, dummy_cfg), str(export_path),
+        export_model, (dummy_rgb, dummy_cfg), str(export_path),
         opset_version=opset,
         input_names=["input", "config"], output_names=["output"],
         dynamic_axes=dynamic_axes,
