@@ -186,6 +186,11 @@ class TrainConfig(BaseModel):
     # destabilize training (see 2026-05-14 iter-N experiments). 0 disables.
     gan_warmup_start: int = 0
     gan_warmup_steps: int = 10000
+    # If > 0, also save numbered checkpoints (iter_NNNNNN.pt) at this
+    # interval. Unlike last.pt (which is overwritten), these accumulate so
+    # you can A/B different training stages or restart from a specific
+    # step. 0 disables.
+    ckpt_history_every: int = 0
 
 
 class ExportConfig(BaseModel):

@@ -1,0 +1,124 @@
+# Production unified training on B200 (183 GB HBM3e, sm_100).
+#
+# Single `restora train --config configs/b200-phase12v-nafnet-large.yaml`
+# launches the full pipeline. Target wall time: ~60 hours for 500k steps.
+#
+# Phase boundaries:
+#   Steps 0-50000:        Phase 1 — deterministic + refine + temporal only
+#   Steps 50000-100000:   GAN warmup — gan loss ramps 0 -> 0.05
+#   Steps 100000-500000:  Phase 2 — all losses stable
+#
+# Memory budget (target on B200):
+#   ~120 GB VRAM (refine + disc + bs=96 image / bs=48 video pair forward)
+#   ~60 GB VRAM headroom for previews, compile graph, EMA, fragmentation
+#
+# Inherits configs/large.yaml -> configs/default.yaml. Loss recipe and axis
+# probabilities are byte-identical to configs/h200-phase12v-nafnet-large.yaml
+# and configs/local-smoke.yaml so the smoke validation is fully predictive
+# of production dynamics.
+#
+# Deployment:
+#   tmux new -s train
+#   cd /workspace/code/restora-models
+#   uv run restora train --config configs/b200-phase12v-nafnet-large.yaml --compile
+#   (Ctrl-B then D to detach)
+
+defaults: large.yaml
+
+run:
+  name: "b200-phase12v-nafnet-large-${date:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  type: nafnet
+  size: large
+  input_size: 256
+  task_embed_dim: 128
+  adversarial_refine: true
+  refine_hidden_dim: 128
+  refine_n_blocks: 8
+
+data:
+  root: "/workspace/data"
+  val_fraction: 0.002
+  num_fixed_preview_samples: 2
+  num_random_preview_samples: 2
+  loader:
+    batch_size: 96         # +50% vs H200 — B200 has 40 GB more VRAM
+    num_workers: 24        # bump from 20; B200 boxes usually have 24+ CPU cores
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 6
+
+compound:
+  identity_prob: 0.05
+  axis_probs:
+    colorize: 0.65
+    denoise:  0.50
+    sharpen:  0.50
+    dejpeg:   0.50
+    deblur:   0.50
+  degradations:
+    colorize: {}
+    denoise:  { sigma_range: [0.005, 0.05] }
+    sharpen:  { factor_choices: [2, 4, 8] }
+    dejpeg:   { quality_range: [20, 70] }
+    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
+
+losses:
+  - {name: l1_rgb,             weight: 1.0}
+  - {name: perceptual_vgg16bn, weight: 0.5,  config: {criterion: l1}}
+  - {name: chroma_lab,         weight: 0.15, apply_to_axes: [colorize]}
+  - {name: colorfulness,       weight: 0.05, apply_to_axes: [colorize]}
+  - {name: freq_l1,            weight: 0.30, apply_to_axes: [sharpen]}
+  - {name: gan,                weight: 0.05, config: {gan_type: hinge},
+     apply_to_axes: [colorize, sharpen]}
+  - {name: temporal_pair,      weight: 0.5}
+
+optim_g:
+  type: AdamW
+  lr: 2.0e-4               # matches H200 — proven LR for bs ~ 96
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  fused: true
+
+optim_d:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.99]
+  fused: true
+
+scheduler:
+  type: cosine
+  warmup_steps: 5000
+  total_steps: 500000
+
+train:
+  total_steps: 500000
+  amp: "bf16"
+  memory_format: channels_last
+  ema_decay: 0.999
+  clip_grad_norm: 1.0
+  preview_every_s: 120
+  preview_history_every: 5000          # 100 history snapshots
+  ckpt_every_steps: 10000              # 50 overwrites of last.pt
+  ckpt_history_every: 50000            # 10 numbered ckpts (iter_NNNNNNN.pt)
+  log_every_steps: 50
+  gan_warmup_start: 50000
+  gan_warmup_steps: 50000
+
+video:
+  enabled: true
+  root: "/workspace/data-videos"
+  max_skip: 5
+  hflip_prob: 0.5
+  require_flow: true
+  video_batch_prob: 0.20
+  batch_size: 48                       # half image bs
+  num_workers: 8
+
+export:
+  on_finish: true
+  opset: 17
+  simplify: true
+  dynamic_hw: true

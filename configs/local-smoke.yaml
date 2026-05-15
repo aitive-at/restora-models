@@ -1,0 +1,129 @@
+# Smoke test: validates the full production pipeline (NAFNet-large +
+# adversarial refine + GAN warmup + temporal_pair on DAVIS) in 5000 steps,
+# ~30-60 min on RTX PRO 6000 Blackwell.
+#
+# Why this config exists:
+#   The previous 100k local config (configs/local-phase12v-nafnet-large-100k.yaml)
+#   crashed the WSL2 host at startup. Root cause was process pressure from
+#   24 dataloader workers (16 image + 8 video) with persistent_workers + pin_memory
+#   on a 45 GB RAM host, not VRAM. This config drops to 10 total workers and
+#   bs=16 to leave ~3x system RAM headroom. Same architecture + loss recipe
+#   as production so the smoke result is signal, not noise.
+#
+# Phase boundaries:
+#   Steps 0-2000:    Phase 1 — deterministic + refine + temporal only
+#   Steps 2000-3000: GAN warmup — gan loss ramps 0 -> 0.05
+#   Steps 3000-5000: Phase 2 — all losses stable
+#
+# Memory budget (target):
+#   VRAM: ~35 GB of 96 GB available (3x safety margin)
+#   System RAM: ~18 GB of 45 GB (3x safety margin, leaves room for OS+IDE)
+#
+# Verification recipe after this run:
+#   uv run python scripts/eval_checkpoints.py \
+#     --ckpts runs/<smoke>/ckpt/iter_0001000.pt runs/<smoke>/ckpt/final.pt \
+#     --data ~/data/laion-images --n 64 --seed 0
+#
+# Pass criteria: per-axis Δ PSNR > 0 for all 5 axes (colorize, denoise,
+# sharpen, dejpeg, deblur). If colorize is flat after 5k steps, the recipe
+# isn't getting traction yet — debug locally before scaling to B200.
+
+defaults: large.yaml
+
+run:
+  name: "local-smoke-${date:%Y-%m-%d_%H-%M-%S}"
+
+model:
+  type: nafnet
+  size: large
+  input_size: 256
+  task_embed_dim: 128
+  adversarial_refine: true
+  refine_hidden_dim: 128
+  refine_n_blocks: 8
+
+data:
+  root: "~/data/laion-images"
+  val_fraction: 0.005
+  num_fixed_preview_samples: 2
+  num_random_preview_samples: 2
+  loader:
+    batch_size: 16          # half the previous 32 — primary safety lever
+    num_workers: 6          # was 16 — WSL2-safe; 195k images don't need more
+    pin_memory: true
+    persistent_workers: true
+    prefetch_factor: 2      # was 4 — halves resident worker buffers
+
+compound:
+  identity_prob: 0.05
+  axis_probs:
+    colorize: 0.65
+    denoise:  0.50
+    sharpen:  0.50
+    dejpeg:   0.50
+    deblur:   0.50
+  degradations:
+    colorize: {}
+    denoise:  { sigma_range: [0.005, 0.05] }
+    sharpen:  { factor_choices: [2, 4, 8] }
+    dejpeg:   { quality_range: [20, 70] }
+    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
+
+losses:
+  - {name: l1_rgb,             weight: 1.0}
+  - {name: perceptual_vgg16bn, weight: 0.5,  config: {criterion: l1}}
+  - {name: chroma_lab,         weight: 0.15, apply_to_axes: [colorize]}
+  - {name: colorfulness,       weight: 0.05, apply_to_axes: [colorize]}
+  - {name: freq_l1,            weight: 0.30, apply_to_axes: [sharpen]}
+  - {name: gan,                weight: 0.05, config: {gan_type: hinge},
+     apply_to_axes: [colorize, sharpen]}
+  - {name: temporal_pair,      weight: 0.5}
+
+optim_g:
+  type: AdamW
+  lr: 1.0e-4                # conservative for short run + smaller batch
+  weight_decay: 0.01
+  betas: [0.9, 0.99]
+  fused: true
+
+optim_d:
+  type: AdamW
+  lr: 1.0e-4
+  weight_decay: 0.0
+  betas: [0.9, 0.99]
+  fused: true
+
+scheduler:
+  type: cosine
+  warmup_steps: 500
+  total_steps: 5000
+
+train:
+  total_steps: 5000
+  amp: "bf16"
+  memory_format: channels_last
+  ema_decay: 0.999
+  clip_grad_norm: 1.0
+  preview_every_s: 60
+  preview_history_every: 1000        # 5 history snapshots over the run
+  ckpt_every_steps: 1000             # 5 overwrites of last.pt
+  ckpt_history_every: 1000           # 5 numbered ckpts for eval comparison
+  log_every_steps: 25
+  gan_warmup_start: 2000
+  gan_warmup_steps: 1000
+
+video:
+  enabled: true
+  root: "~/data/laion-videos"        # DAVIS-2017, requires precomputed RAFT flow
+  max_skip: 3
+  hflip_prob: 0.5
+  require_flow: true
+  video_batch_prob: 0.20             # 20% video, matches production
+  batch_size: 8                      # half image bs since video does 2x forward
+  num_workers: 4                     # was 8 — WSL2-safe
+
+export:
+  on_finish: true
+  opset: 17
+  simplify: true
+  dynamic_hw: true

@@ -461,6 +461,9 @@ class Trainer:
                 if (self.cfg.train.ckpt_every_steps > 0
                         and self.step % self.cfg.train.ckpt_every_steps == 0):
                     self._save_ckpt(name="last.pt")
+                if (self.cfg.train.ckpt_history_every > 0
+                        and self.step % self.cfg.train.ckpt_history_every == 0):
+                    self._save_ckpt(name=f"iter_{self.step:07d}.pt")
             self._save_ckpt(name="final.pt")
             self._write_preview()
             if self.cfg.export.on_finish:
