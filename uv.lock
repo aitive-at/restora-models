@@ -1349,6 +1349,20 @@ wheels = [
 ]
 
 [[package]]
+name = "pnnx"
+version = "20260409"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "torch" },
+]
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/79/b9/bb020b72c8ae75663915ae8abb74a2391d0eb580de787058ca90dfbe7de8/pnnx-20260409-py3-none-macosx_10_9_universal2.macosx_10_9_x86_64.macosx_11_0_arm64.whl", hash = "sha256:8c2cc7fa2efc99665496a43f02c6feb48d33d900f72ea2fdcdd9d9a4174d0cb0", size = 54031885, upload-time = "2026-04-09T08:21:45.777Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/bf/ede81134e6906cc8412982fa5b9ee93134e87a168fa256264dacfa8a67b9/pnnx-20260409-py3-none-manylinux2014_aarch64.manylinux_2_17_aarch64.whl", hash = "sha256:1747b89b31ef3b7ef2a4dd368f1b173def44e73b14207b465a80b18295916d57", size = 23866029, upload-time = "2026-04-09T08:21:49.16Z" },
+    { url = "https://files.pythonhosted.org/packages/a4/00/23f0517c654e6869aaf1064b9ae064f05f83f46c57d4820083ca1e782f23/pnnx-20260409-py3-none-manylinux2014_x86_64.manylinux_2_17_x86_64.whl", hash = "sha256:935c32c02c2252d6be4447caa996b703db8b0bdb4b0aae41afc88005744b65e2", size = 28211155, upload-time = "2026-04-09T08:21:51.976Z" },
+    { url = "https://files.pythonhosted.org/packages/e3/ad/545c232a28a71f54e1bd2c770fc6fb40635701367025ca14a79191460a1f/pnnx-20260409-py3-none-win_amd64.whl", hash = "sha256:8604658f3d199bc8666a39cc9faf621deb2e3e4d87f6a52b144eb9ad391189a0", size = 18258886, upload-time = "2026-04-09T08:21:54.875Z" },
+]
+
+[[package]]
 name = "protobuf"
 version = "7.34.1"
 source = { registry = "https://pypi.org/simple" }
@@ -1781,6 +1795,7 @@ dependencies = [
     { name = "onnxsim" },
     { name = "opencv-python-headless" },
     { name = "pillow" },
+    { name = "pnnx" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "rich" },
@@ -1811,6 +1826,7 @@ requires-dist = [
     { name = "onnxsim", specifier = ">=0.4" },
     { name = "opencv-python-headless", specifier = ">=4.10" },
     { name = "pillow", specifier = ">=10" },
+    { name = "pnnx", specifier = ">=20260409" },
     { name = "pydantic", specifier = ">=2.7" },
     { name = "pytest", marker = "extra == 'dev'", specifier = ">=8" },
     { name = "pytest-cov", marker = "extra == 'dev'" },

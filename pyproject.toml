@@ -26,6 +26,8 @@ dependencies = [
   "huggingface_hub>=0.24",
   # Latent diffusion refine head — uses the SD 1.5 VAE (frozen) via diffusers
   "diffusers>=0.30",
+  # PNNX export (ncnn-compatible format; mobile / edge deployment)
+  "pnnx>=20260409",
 ]
 
 [project.optional-dependencies]

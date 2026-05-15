@@ -240,36 +240,52 @@ def export(
     model: Path = typer.Option(..., "--model", exists=True, dir_okay=False),
     output: Path = typer.Option(..., "--output", "--out"),
     input_size: int = typer.Option(256, "--input-size"),
-    opset: int = typer.Option(17, "--opset"),
-    simplify: bool = typer.Option(True, "--simplify/--no-simplify"),
+    format_: str = typer.Option("onnx", "--format",
+                                 help="onnx (default) | pnnx. ONNX is for "
+                                      "server / cross-platform inference; "
+                                      "PNNX produces ncnn-compatible files "
+                                      "for mobile/edge deployment."),
+    opset: int = typer.Option(17, "--opset",
+                              help="ONNX opset (ignored for --format pnnx)"),
+    simplify: bool = typer.Option(True, "--simplify/--no-simplify",
+                                  help="ONNX-only; ignored for --format pnnx"),
     dynamic_hw: bool = typer.Option(False, "--dynamic-hw/--fixed-hw"),
     precision: str = typer.Option("fp32", "--precision",
-                                  help="fp32 (default) | fp16 | fp8 | fp4"),
+                                  help="fp32 (default) | fp16 | fp8 | fp4. "
+                                       "For --format pnnx, fp32/fp16 are "
+                                       "honored (fp16 -> ncnn fp16 weights); "
+                                       "fp8/fp4 raise an error for pnnx."),
     task: Optional[str] = typer.Option(
         None, "--task",
-        help="Bake a specific task's config into the ONNX (resulting graph "
-             "has ONLY 'input' tensor, no 'config'). Options: colorize | "
-             "denoise | sharpen | dejpeg | deblur | all"),
+        help="Bake a specific task's config into the export (resulting "
+             "graph has ONLY 'input' tensor, no 'config'). Options: "
+             "colorize | denoise | sharpen | dejpeg | deblur | all"),
     bake_axes: Optional[str] = typer.Option(
         None, "--bake-axes",
-        help="Comma-separated 5-axis vector to bake into the ONNX, e.g. "
-             "'1,0,1,0,0' for colorize+sharpen. Mutually exclusive with --task."),
+        help="Comma-separated 5-axis vector to bake in, e.g. '1,0,1,0,0' "
+             "for colorize+sharpen. Mutually exclusive with --task."),
 ) -> None:
-    """Export a trained refine checkpoint to ONNX.
+    """Export a trained refine checkpoint to ONNX or PNNX/ncnn.
 
-    Default export emits a 2-input ONNX (input, config) -> output that
+    Default emits a 2-input artifact (input, config) -> output that
     works for any of the 5 restoration axes by setting the config vector.
 
-    Pass --task NAME or --bake-axes V1,V2,V3,V4,V5 to emit a per-task
-    ONNX with the config tensor BAKED in as a buffer; that resulting
-    file has only an `input` tensor — "RGB in, RGB out" — and is what
-    deployment consumers usually want."""
+    Pass --task NAME or --bake-axes V1,V2,V3,V4,V5 to bake the config
+    as a constant; that resulting file has only an `input` tensor —
+    "RGB in, RGB out" — and is what deployment consumers usually want.
+
+    --format pnnx is the ncnn deployment path. It produces several files
+    alongside --output: .pnnx.bin / .pnnx.param / .ncnn.bin / .ncnn.param
+    / .pnnx.onnx / .pt / Python recreate scripts. The .ncnn.* pair is
+    what mobile / edge consumers load."""
     import torch
     from restora_models.config import ModelConfig
     from restora_models.data.compound import AXES
-    from restora_models.export.onnx import export_onnx_from_model
     from restora_models.models import build_model
 
+    format_ = format_.lower()
+    if format_ not in ("onnx", "pnnx"):
+        raise typer.BadParameter(f"--format must be onnx or pnnx, got {format_!r}")
     if task is not None and bake_axes is not None:
         raise typer.BadParameter("--task and --bake-axes are mutually exclusive")
     fixed_config: list[float] | None = None
@@ -299,12 +315,27 @@ def export(
     task_map = payload.get("task_map") or {}
     if task is not None:
         task_map = dict(task_map); task_map["task"] = task
-    effective_opset = max(opset, 19) if precision == "fp8" else opset
-    export_onnx_from_model(
-        m, num_axes=len(AXES), input_size=input_size,
-        export_path=output, opset=effective_opset, simplify=simplify,
-        dynamic_hw=dynamic_hw, task_map=task_map, precision=precision,
-        fixed_config=fixed_config,
-    )
+
+    if format_ == "pnnx":
+        if precision not in ("fp32", "fp16"):
+            raise typer.BadParameter(
+                f"--format pnnx supports precision fp32 or fp16, got {precision!r}"
+            )
+        from restora_models.export.pnnx import export_pnnx_from_model
+        export_pnnx_from_model(
+            m, num_axes=len(AXES), input_size=input_size,
+            export_path=output, dynamic_hw=dynamic_hw,
+            fp16=(precision == "fp16"), fixed_config=fixed_config,
+            task_map=task_map,
+        )
+    else:
+        from restora_models.export.onnx import export_onnx_from_model
+        effective_opset = max(opset, 19) if precision == "fp8" else opset
+        export_onnx_from_model(
+            m, num_axes=len(AXES), input_size=input_size,
+            export_path=output, opset=effective_opset, simplify=simplify,
+            dynamic_hw=dynamic_hw, task_map=task_map, precision=precision,
+            fixed_config=fixed_config,
+        )
     flavor = f"baked={task or fixed_config}" if fixed_config else "generic"
-    typer.echo(f"wrote {output} ({precision}, {flavor})")
+    typer.echo(f"wrote {output} ({format_}, {precision}, {flavor})")
