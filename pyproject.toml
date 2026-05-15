@@ -24,6 +24,8 @@ dependencies = [
   # LAION dataset download
   "img2dataset>=1.45",
   "huggingface_hub>=0.24",
+  # Latent diffusion refine head — uses the SD 1.5 VAE (frozen) via diffusers
+  "diffusers>=0.30",
 ]
 
 [project.optional-dependencies]
