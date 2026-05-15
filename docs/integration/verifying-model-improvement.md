@@ -8,7 +8,7 @@ the pieces — this doc just stitches them together into a recipe.
 
 ```sh
 # 1. Train a smoke run with checkpoint history enabled
-uv run restora train --config configs/local-smoke.yaml
+uv run restora train --config configs/local.yaml
 
 # 2. Compare an early checkpoint against the final one
 uv run python scripts/eval_checkpoints.py \

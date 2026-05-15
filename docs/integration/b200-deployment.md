@@ -98,7 +98,7 @@ and loss recipe, then compare early-vs-late checkpoints:
 ```sh
 tmux new -s smoke
 cd /workspace/code/restora-models
-uv run restora train --config configs/local-smoke.yaml --data /workspace/data/images/relaion2B-multi-aesthetic --video-root /workspace/data-videos
+uv run restora train --config configs/local.yaml --data /workspace/data/images/relaion2B-multi-aesthetic --video-root /workspace/data-videos
 # Ctrl-B then D to detach. ~10-20 min on B200 (vs 30-60 min on local).
 ```
 
@@ -124,12 +124,12 @@ the 60h run — debug the loss recipe first.
 ```sh
 tmux new -s train
 cd /workspace/code/restora-models
-uv run restora train --config configs/b200-phase12v-nafnet-large.yaml --compile
+uv run restora train --config configs/b200.yaml --compile
 # Ctrl-B then D to detach
 ```
 
 This:
-- Loads `configs/b200-phase12v-nafnet-large.yaml` (bs=96, 500k steps, full pipeline).
+- Loads `configs/b200.yaml` (bs=96, 500k steps, full pipeline).
 - Enables `torch.compile` (Inductor on sm_100 is stable; first step ~3-5 min).
 - Reads images from `/workspace/data/images/relaion2B-multi-aesthetic` and
   video pairs from `/workspace/data-videos`.

@@ -49,32 +49,3 @@ def test_legacy_nafnet_checkpoint_loads(tmp_path):
     assert payload["step"] == 100
 
 
-def _save_legacy_promptir_ckpt(tmp_path):
-    cfg = ModelConfig(type="promptir", size="tiny", input_size=32)
-    m = build_model(cfg, num_axes=5)
-    sd = m.state_dict()
-    legacy = {}
-    for k, v in sd.items():
-        if k.startswith("dual_head.head_rgb."):
-            legacy["head." + k.split(".", 2)[2]] = v.clone()
-        elif k.startswith("dual_head."):
-            pass
-        else:
-            legacy[k] = v.clone()
-    path = tmp_path / "legacy_promptir.pt"
-    torch.save({
-        "model": legacy, "step": 100,
-        "extra": {"cfg": {"model": cfg.model_dump()}},
-    }, path)
-    return path
-
-
-def test_legacy_promptir_checkpoint_loads(tmp_path):
-    path = _save_legacy_promptir_ckpt(tmp_path)
-    cfg = ModelConfig(type="promptir", size="tiny", input_size=32)
-    fresh = build_model(cfg, num_axes=5)
-    before_ab = fresh.dual_head.head_ab.weight.clone()
-    payload = load_checkpoint(path, model=fresh)
-    after_ab = fresh.dual_head.head_ab.weight
-    assert torch.equal(before_ab, after_ab)
-    assert payload["step"] == 100

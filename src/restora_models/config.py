@@ -14,21 +14,20 @@ from pydantic import BaseModel, Field, field_validator
 
 class ModelConfig(BaseModel):
     type: str = "nafnet"
-    size: Literal["tiny", "large"] = "tiny"
+    size: Literal["tiny", "large"] = "large"
     input_size: int = 256
+    # NAFNet block sizing — None means "use the size preset". `tiny` is
+    # kept in the size enum because unit tests use it for fast model
+    # construction (nf=32, ~6M params). Production always uses `large`.
     nf: int | None = None
     enc_depths: list[int] | None = None
     bottle_blocks: int | None = None
     hidden_dim: int | None = None
     task_embed_dim: int = 128
-    # PromptIR-specific overrides (ignored when type != "promptir"):
-    prompt_n: int | None = None
-    prompt_dim: int | None = None
-    prompt_hw: int | None = None
-    # Adversarial refine head — optional residual generator that sits after
-    # the deterministic dual-head output. Trained with adversarial + perceptual
+    # Adversarial refine head — residual generator that sits after the
+    # deterministic dual-head output. Trained with adversarial + perceptual
     # losses for improved perceptual quality on the hard ill-posed tasks
-    # (colorize, sharpen). Default OFF for backward compat.
+    # (colorize, sharpen). Default OFF for backward compat with old configs.
     adversarial_refine: bool = False
     refine_hidden_dim: int | None = None    # default 128 if None
     refine_n_blocks: int | None = None      # default 8 if None

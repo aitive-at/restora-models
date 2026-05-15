@@ -1,6 +1,0 @@
-defaults: default.yaml
-model:
-  size: tiny
-data:
-  loader:
-    batch_size: 32

@@ -52,28 +52,18 @@ def save_checkpoint(
 
 
 def _rename_legacy_keys(state_dict: dict, target_keys: set[str]) -> tuple[dict, list[str]]:
-    """Rename single-head checkpoint keys (`head.*`) to the new dual-head names.
+    """Rename legacy single-head NAFNet keys (`head.*`) to the new dual-head
+    name (`head_lab_delta.*`). Returns (renamed_state_dict, log).
 
-    Determines the rename target by inspecting `target_keys` (the keys of the
-    model we're loading INTO):
-      - If target has `head_lab_delta.*` (NAFNet): legacy `head.*` -> `head_lab_delta.*`
-      - If target has `dual_head.head_rgb.*` (PromptIR): legacy `head.*` -> `dual_head.head_rgb.*`
-      - Otherwise: no rename.
-
-    Returns (renamed_state_dict, list_of_rename_strings).
+    No-op when the target model doesn't have a `head_lab_delta.*` keyspace.
     """
-    has_nafnet_dual = any(k.startswith("head_lab_delta.") for k in target_keys)
-    has_promptir_dual = any(k.startswith("dual_head.head_rgb.") for k in target_keys)
-    if not (has_nafnet_dual or has_promptir_dual):
+    if not any(k.startswith("head_lab_delta.") for k in target_keys):
         return state_dict, []
-    if has_nafnet_dual and has_promptir_dual:  # defensive — both backbones in one model would be a bug
-        return state_dict, []
-    prefix = "head_lab_delta." if has_nafnet_dual else "dual_head.head_rgb."
     renamed = {}
     log: list[str] = []
     for k, v in state_dict.items():
         if k.startswith("head."):
-            new_k = prefix + k.split(".", 1)[1]
+            new_k = "head_lab_delta." + k.split(".", 1)[1]
             renamed[new_k] = v
             log.append(f"{k} -> {new_k}")
         else:
