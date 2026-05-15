@@ -32,6 +32,14 @@ def _reference_configs(num_axes: int) -> list[tuple[str, list[float]]]:
 
 
 def _convert_to_fp16(path: Path) -> None:
+    """Convert an ONNX model's internal weights + activations to fp16,
+    preserving the input/output dtypes as float32.
+
+    keep_io_types=True is deliberate: it lets the C# / Python downstream
+    consumer feed normal float32 tensors without per-call dtype casts.
+    Internal kernels still run in fp16 for ~2× speedup and ~half memory
+    on modern GPUs. The fp32 I/O cost is negligible (a few MB per frame).
+    """
     try:
         from onnxconverter_common import float16
     except ImportError as e:
@@ -42,9 +50,17 @@ def _convert_to_fp16(path: Path) -> None:
     import onnx
     m = onnx.load(str(path))
     m_fp16 = float16.convert_float_to_float16(
-        m, keep_io_types=False, disable_shape_infer=False,
+        m, keep_io_types=True, disable_shape_infer=False,
     )
-    onnx.save(m_fp16, str(path))
+    # Save with weights inline. After fp16 conversion the model is half the
+    # size and easily fits inline (~200 MB for a 100M-param model); no need
+    # for external data. If torch.onnx.export wrote a `.data` sidecar
+    # earlier, it's now orphaned fp32 data — remove it so the artifact is
+    # a single self-contained .onnx file the C# / Python downstream can ship.
+    onnx.save(m_fp16, str(path), save_as_external_data=False)
+    orphan = Path(str(path) + ".data")
+    if orphan.exists():
+        orphan.unlink()
 
 
 def _quantize_to_fp8(path: Path, opset: int) -> None:
@@ -94,6 +110,12 @@ def export_onnx_from_model(
     """
     if precision not in _VALID_PRECISION:
         raise ValueError(f"unknown precision {precision!r}; must be one of {_VALID_PRECISION}")
+    # Loosen the parity check tolerance to match the precision's natural
+    # quantization error. fp16 has ~1 ULP ≈ 1e-3 near unit values, so the
+    # round-trip diff lands in [1e-3, 1e-2] in practice. Default atol=1e-3
+    # is set for fp32 numerics and would falsely flag every fp16 export.
+    _precision_floor = {"fp32": 1e-3, "fp16": 1.5e-2, "fp8": 5e-2, "fp4": 1e-1}
+    parity_atol = max(parity_atol, _precision_floor[precision])
     if fixed_config is not None:
         if len(fixed_config) != num_axes:
             raise ValueError(
