@@ -11,6 +11,7 @@ from . import freq as _freq  # noqa: F401
 from . import gan as _gan  # noqa: F401
 from . import perceptual as _perceptual  # noqa: F401
 from . import pixel as _pixel  # noqa: F401
+from . import diffusion as _diffusion  # noqa: F401
 from . import temporal as _temporal  # noqa: F401
 from .gan import GeneratorGANLoss
 from .registry import LossContext, build_loss

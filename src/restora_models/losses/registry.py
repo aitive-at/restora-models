@@ -22,6 +22,10 @@ class LossContext:
     # missing, the loss returns 0 (image-only batches).
     secondary_pred_rgb: torch.Tensor | None = None    # (B, 3, H, W) — model output on frame t+k
     flow_t_to_secondary: torch.Tensor | None = None   # (B, 2, H, W) — pixel-displacement flow t -> t+k
+    # Diffusion-head intermediates. Trainer populates these when
+    # cfg.model.refine_type == "diffusion"; absent otherwise.
+    pred_latent: torch.Tensor | None = None
+    target_latent: torch.Tensor | None = None
 
 
 class RestorationLoss(nn.Module):
