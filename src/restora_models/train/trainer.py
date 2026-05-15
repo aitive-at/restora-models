@@ -94,6 +94,7 @@ class Trainer:
                               else torch.contiguous_format)
         self.model = build_model(cfg.model, num_axes=len(AXES)).to(
             self.device, memory_format=self.memory_format)
+        self._is_diffusion_refine = (cfg.model.refine_type == "diffusion")
 
         # Optim + scheduler
         self.opt_g = _build_optimizer(self.model.parameters(), cfg.optim_g)
@@ -302,9 +303,15 @@ class Trainer:
 
         self.opt_g.zero_grad(set_to_none=True)
         with self._amp_ctx():
-            pred = self.model(degraded, config)
+            if self._is_diffusion_refine:
+                pred, extras = self.model.forward_with_extras(degraded, clean, config)
+            else:
+                pred = self.model(degraded, config)
+                extras = {}
             ctx = LossContext(pred_rgb=pred, clean_rgb=clean, degraded_rgb=degraded,
-                              config=config, axes_active=axes, discriminator=self.disc)
+                              config=config, axes_active=axes, discriminator=self.disc,
+                              pred_latent=extras.get("pred_latent"),
+                              target_latent=extras.get("target_latent"))
             weight_overrides = self._compute_weight_overrides()
             total_g, log_g = self.loss_set(ctx, weight_overrides=weight_overrides)
             if not torch.isfinite(total_g):
@@ -379,13 +386,21 @@ class Trainer:
         with self._amp_ctx():
             deg_pair = torch.cat([deg_t, deg_tk], dim=0)
             cfg_pair = torch.cat([config, config], dim=0)
-            pred_pair = self.model(deg_pair, cfg_pair)
+            if self._is_diffusion_refine:
+                clean_pair_for_extras = torch.cat([clean_t, clean_tk], dim=0)
+                pred_pair, extras = self.model.forward_with_extras(
+                    deg_pair, clean_pair_for_extras, cfg_pair)
+            else:
+                pred_pair = self.model(deg_pair, cfg_pair)
+                extras = {}
             pred_t, pred_tk = pred_pair[:B], pred_pair[B:]
 
             ctx = LossContext(
                 pred_rgb=pred_t, clean_rgb=clean_t, degraded_rgb=deg_t,
                 config=config, axes_active=axes, discriminator=self.disc,
                 secondary_pred_rgb=pred_tk, flow_t_to_secondary=flow,
+                pred_latent=extras.get("pred_latent"),
+                target_latent=extras.get("target_latent"),
             )
             weight_overrides = self._compute_weight_overrides()
             total_g, log_g = self.loss_set(ctx, weight_overrides=weight_overrides)
