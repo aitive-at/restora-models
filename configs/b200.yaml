@@ -1,32 +1,24 @@
-# Production unified training on B200 (183 GB HBM3e, sm_100).
+# Production training config for NVIDIA B200 (183 GB HBM3e, sm_100).
 #
-# Single `restora train --config configs/b200-phase12v-nafnet-large.yaml`
-# launches the full pipeline. Target wall time: ~60 hours for 500k steps.
+# Single command kicks off the full 60h pipeline:
+#   uv run restora train --config configs/b200.yaml --compile
 #
 # Phase boundaries:
 #   Steps 0-50000:        Phase 1 — deterministic + refine + temporal only
 #   Steps 50000-100000:   GAN warmup — gan loss ramps 0 -> 0.05
 #   Steps 100000-500000:  Phase 2 — all losses stable
 #
-# Memory budget (target on B200):
-#   ~120 GB VRAM (refine + disc + bs=96 image / bs=48 video pair forward)
-#   ~60 GB VRAM headroom for previews, compile graph, EMA, fragmentation
+# Memory budget on B200:
+#   ~120 GB VRAM (bs=96 image / bs=48 video pair + refine + discriminator)
+#   ~60 GB headroom for previews, compile graph, EMA, fragmentation
 #
-# Inherits configs/large.yaml -> configs/default.yaml. Loss recipe and axis
-# probabilities are byte-identical to configs/h200-phase12v-nafnet-large.yaml
-# and configs/local-smoke.yaml so the smoke validation is fully predictive
-# of production dynamics.
-#
-# Deployment:
-#   tmux new -s train
-#   cd /workspace/code/restora-models
-#   uv run restora train --config configs/b200-phase12v-nafnet-large.yaml --compile
-#   (Ctrl-B then D to detach)
+# Loss recipe and axis probabilities are byte-identical to configs/local.yaml
+# so the local smoke run is fully predictive of production dynamics.
 
 defaults: large.yaml
 
 run:
-  name: "b200-phase12v-nafnet-large-${date:%Y-%m-%d_%H-%M-%S}"
+  name: "b200-${date:%Y-%m-%d_%H-%M-%S}"
 
 model:
   type: nafnet
@@ -43,12 +35,18 @@ data:
   num_fixed_preview_samples: 2
   num_random_preview_samples: 2
   loader:
-    batch_size: 96         # +50% vs H200 — B200 has 40 GB more VRAM
-    num_workers: 24        # bump from 20; B200 boxes usually have 24+ CPU cores
+    batch_size: 96
+    num_workers: 24
     pin_memory: true
     persistent_workers: true
     prefetch_factor: 6
 
+# Axis probabilities: colorize gets a 0.65 bias (the hardest axis, the
+# most ill-posed), everything else at 0.50. This is the recipe that
+# produced iter-6's breakthrough deltas. A more aggressive 0.75/0.40
+# split was tried earlier and crushed easy tasks via multi-task contention.
+# Sharpen + colorize specialization comes from freq_l1, chroma_lab,
+# colorfulness, ab-head, and the adversarial refine head — not axis_probs.
 compound:
   identity_prob: 0.05
   axis_probs:
@@ -68,7 +66,10 @@ losses:
   - {name: l1_rgb,             weight: 1.0}
   - {name: perceptual_vgg16bn, weight: 0.5,  config: {criterion: l1}}
   - {name: chroma_lab,         weight: 0.15, apply_to_axes: [colorize]}
-  - {name: colorfulness,       weight: 0.05, apply_to_axes: [colorize]}
+  # colorfulness bumped 0.05 -> 0.08 ("vivid" preset value) for a slightly
+  # stronger explicit-saturation push — based on the local smoke showing
+  # colorize "partially works" at 20k steps with the standard 0.05.
+  - {name: colorfulness,       weight: 0.08, apply_to_axes: [colorize]}
   - {name: freq_l1,            weight: 0.30, apply_to_axes: [sharpen]}
   - {name: gan,                weight: 0.05, config: {gan_type: hinge},
      apply_to_axes: [colorize, sharpen]}
@@ -76,7 +77,7 @@ losses:
 
 optim_g:
   type: AdamW
-  lr: 2.0e-4               # matches H200 — proven LR for bs ~ 96
+  lr: 2.0e-4
   weight_decay: 0.01
   betas: [0.9, 0.99]
   fused: true
@@ -114,7 +115,7 @@ video:
   hflip_prob: 0.5
   require_flow: true
   video_batch_prob: 0.20
-  batch_size: 48                       # half image bs
+  batch_size: 48
   num_workers: 8
 
 export:

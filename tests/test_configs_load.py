@@ -18,17 +18,21 @@ def test_large_yaml_loads():
 
 
 def test_local_yaml_loads():
-    """The local smoke config: 5k steps, full pipeline, RTX PRO 6000 Blackwell."""
+    """The local smoke config on RTX PRO 6000 Blackwell. GAN is intentionally
+    disabled — the local schedule can't give the GAN enough warmup runway,
+    and reconstruction losses are what we want to validate at this scale."""
     cfg = load_config(ROOT / "local.yaml")
     assert cfg.model.type == "nafnet"
     assert cfg.model.size == "large"
     assert cfg.model.adversarial_refine is True
-    assert cfg.train.total_steps == 5000
     assert cfg.data.loader.batch_size == 16
-    # GAN warmup must straddle Phase 1 → Phase 2 boundary
-    assert cfg.train.gan_warmup_start < cfg.train.total_steps
-    # Video loop wired up so temporal_pair fires
     assert cfg.video.enabled is True
+    # No GAN in the smoke loss stack
+    loss_names = [l.name for l in cfg.losses]
+    assert "gan" not in loss_names
+    # GAN warmup fields are zeroed (sanity — they'd be no-ops anyway)
+    assert cfg.train.gan_warmup_start == 0
+    assert cfg.train.gan_warmup_steps == 0
 
 
 def test_b200_yaml_loads():
@@ -45,14 +49,17 @@ def test_b200_yaml_loads():
     assert cfg.video.enabled is True
 
 
-def test_local_and_b200_share_loss_recipe():
-    """Smoke (local) and production (b200) must share the loss recipe so
-    smoke deltas predict production behavior."""
+def test_local_and_b200_share_non_gan_losses():
+    """The non-GAN portion of the loss stack must be identical so smoke
+    reconstruction deltas predict production behavior. b200 additionally
+    carries the GAN loss; local does not (see test_local_yaml_loads)."""
     local = load_config(ROOT / "local.yaml")
     b200 = load_config(ROOT / "b200.yaml")
-    by_name_local = {l.name: l.weight for l in local.losses}
-    by_name_b200 = {l.name: l.weight for l in b200.losses}
-    assert by_name_local == by_name_b200
+    local_w = {l.name: l.weight for l in local.losses if l.name != "gan"}
+    b200_w  = {l.name: l.weight for l in b200.losses  if l.name != "gan"}
+    assert local_w == b200_w
+    # And the b200 stack does carry GAN
+    assert "gan" in {l.name for l in b200.losses}
 
 
 def test_local_and_b200_share_axis_probs():
