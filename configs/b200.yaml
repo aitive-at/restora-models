@@ -4,26 +4,29 @@
 #   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True \
 #       uv run restora train --config configs/b200.yaml --compile
 #
-# At bs=48 on B200 expect ~70-80h for 500k steps (was estimated 60h at
-# bs=96, but that OOM'd). If you need to hit a 60h budget, reduce
-# train.total_steps to ~350000 — the recipe still converges, just with
-# less polish time after GAN warmup.
+# At bs=32 on B200 expect ~100-120h for 500k steps. If you want closer
+# to 60h, reduce train.total_steps to ~250000 — the recipe still
+# converges, just with less polish time after GAN warmup. Or, once
+# bs=32 is verified working, try bumping back up to bs=48 with the
+# expandable_segments env var to see if the earlier OOM was fragmentation.
 #
 # Phase boundaries:
 #   Steps 0-50000:        Phase 1 — deterministic + refine + temporal only
 #   Steps 50000-100000:   GAN warmup — gan loss ramps 0 -> 0.05
 #   Steps 100000-500000:  Phase 2 — all losses stable
 #
-# Memory budget on B200 (verified 2026-05-15 — bs=96 OOM'd at 178 GB,
-# bs=64 ALSO OOM'd at 175 GB on Blackwell sm_100 because cuDNN workspace
-# + refine-head AdaLN backward saves are larger than on Hopper sm_90):
-#   ~120 GB VRAM (bs=48 image / bs=24 video pair + refine + discriminator)
-#   ~55 GB headroom for previews, compile graph, EMA, fragmentation
+# Memory budget on B200 (verified 2026-05-15 — bs=96/64/48 all OOM'd at
+# ~177 GB on Blackwell sm_100):
+#   ~85 GB VRAM (bs=32 image / bs=16 video pair + refine + discriminator)
+#   ~90 GB headroom for previews, compile graph, EMA, fragmentation
+#
+# Real per-sample peak on this workload on B200 is much higher than the
+# prior-art H200 numbers suggested (~2.5-3 GB/sample at the cuDNN
+# workspace + refine-head AdaLN backward saves on sm_100). bs=32 leaves
+# absurd headroom; you can try bumping up later if it lands clean.
 #
 # IMPORTANT: launch with
 #   PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run restora train ...
-# The allocator's default segmented mode wastes 5-15 GB to fragmentation
-# on this workload; expandable_segments recovers it.
 #
 # Loss recipe and axis probabilities are byte-identical to configs/local.yaml
 # so the local smoke run is fully predictive of production dynamics.
@@ -48,11 +51,11 @@ data:
   num_fixed_preview_samples: 2
   num_random_preview_samples: 2
   loader:
-    batch_size: 48           # cut from 96 -> 64 -> 48; bs=64 still OOM on B200
-    num_workers: 12          # scaled with batch
+    batch_size: 32           # cut 96 -> 64 -> 48 -> 32 over OOMs on Blackwell
+    num_workers: 8           # scaled with batch
     pin_memory: true
     persistent_workers: true
-    prefetch_factor: 3
+    prefetch_factor: 2
 
 # Axis probabilities: colorize gets a 0.65 bias (the hardest axis, the
 # most ill-posed), everything else at 0.50. This is the recipe that
@@ -90,8 +93,8 @@ losses:
 
 optim_g:
   type: AdamW
-  lr: 1.25e-4              # linear-scaling from bs=64@1.5e-4 -> bs=48 -> ~1.125e-4,
-                           # rounded up modestly for slightly faster convergence
+  lr: 1.0e-4               # linear-scaling from bs=64@1.5e-4 to bs=32 = 0.75e-4;
+                           # 1.0e-4 is a small upward bias for convergence speed
   weight_decay: 0.01
   betas: [0.9, 0.99]
   fused: true
@@ -129,8 +132,8 @@ video:
   hflip_prob: 0.5
   require_flow: true
   video_batch_prob: 0.20
-  batch_size: 24            # half of image bs — video step does 2x forward
-  num_workers: 6
+  batch_size: 16            # half of image bs — video step does 2x forward
+  num_workers: 4
 
 export:
   on_finish: true
