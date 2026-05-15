@@ -1,10 +1,21 @@
-# Coliraz ONNX Inference Guide
+# Coliraz ONNX Inference Guide — LEGACY (colorize-only v1)
 
-> **Audience:** an engineer (or an LLM teammate) integrating a coliraz-trained
-> `.onnx` model into another language/runtime (C#, C++, JS, …). This file
-> documents *exactly* the pre-/post-processing the model expects, the
-> architectural constraints baked into the graph, and the recipe the
-> reference Python pipeline runs.
+> ⚠️  **This document describes the legacy v1 model** (DDColor port,
+> colorize-only, LAB ab output, ConvNeXt encoder). The current
+> restora-models v2 model is a 5-task RGB-in / RGB-out architecture
+> (NAFNet-large + dual-output head + adversarial refine head).
+>
+> **For v2 ONNX inference in C# / video applications, see
+> [csharp-video-inference.md](csharp-video-inference.md) instead.**
+>
+> Below is preserved for historical reference; do NOT implement against it
+> for new integrations.
+
+> **Audience (historical):** an engineer (or LLM teammate) integrating a
+> coliraz-trained `.onnx` model into another language/runtime (C#, C++,
+> JS, …). This file documents *exactly* the pre-/post-processing the
+> model expects, the architectural constraints baked into the graph, and
+> the recipe the reference Python pipeline runs.
 >
 > If you only read one section, read **§3 (Inference Recipe)** and
 > **§4 (Critical Gotchas)**.
