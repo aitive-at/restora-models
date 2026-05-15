@@ -42,7 +42,8 @@ def test_b200_yaml_loads():
     assert cfg.model.size == "large"
     assert cfg.model.adversarial_refine is True
     assert cfg.train.total_steps == 500_000
-    assert cfg.data.loader.batch_size == 96
+    # bs=64 — cut from 96 after 2026-05-15 OOM on B200 (178 GB)
+    assert cfg.data.loader.batch_size == 64
     assert cfg.train.gan_warmup_start == 50_000
     # Numbered ckpts written every 50k steps so eval_checkpoints can A/B
     assert cfg.train.ckpt_history_every == 50_000

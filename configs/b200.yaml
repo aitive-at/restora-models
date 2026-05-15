@@ -8,9 +8,12 @@
 #   Steps 50000-100000:   GAN warmup — gan loss ramps 0 -> 0.05
 #   Steps 100000-500000:  Phase 2 — all losses stable
 #
-# Memory budget on B200:
-#   ~120 GB VRAM (bs=96 image / bs=48 video pair + refine + discriminator)
-#   ~60 GB headroom for previews, compile graph, EMA, fragmentation
+# Memory budget on B200 (verified 2026-05-15 — earlier bs=96 OOM'd at
+# 178 GB; NAFNet-large + refine head at 256² bf16 channels_last takes
+# ~1.85 GB/sample of peak activation memory once you include backward
+# saved-tensors + disc + AMP master weights):
+#   ~125 GB VRAM (bs=64 image / bs=32 video pair + refine + discriminator)
+#   ~50 GB headroom for previews, compile graph, EMA, fragmentation
 #
 # Loss recipe and axis probabilities are byte-identical to configs/local.yaml
 # so the local smoke run is fully predictive of production dynamics.
@@ -35,11 +38,11 @@ data:
   num_fixed_preview_samples: 2
   num_random_preview_samples: 2
   loader:
-    batch_size: 96
-    num_workers: 24
+    batch_size: 64           # cut from 96 — bs=96 OOM'd at 178 GB on this GPU
+    num_workers: 16          # scaled with batch
     pin_memory: true
     persistent_workers: true
-    prefetch_factor: 6
+    prefetch_factor: 4
 
 # Axis probabilities: colorize gets a 0.65 bias (the hardest axis, the
 # most ill-posed), everything else at 0.50. This is the recipe that
@@ -77,7 +80,7 @@ losses:
 
 optim_g:
   type: AdamW
-  lr: 2.0e-4
+  lr: 1.5e-4               # tuned for bs=64 — matches the proven h200-phase12v LR
   weight_decay: 0.01
   betas: [0.9, 0.99]
   fused: true
@@ -115,7 +118,7 @@ video:
   hflip_prob: 0.5
   require_flow: true
   video_batch_prob: 0.20
-  batch_size: 48
+  batch_size: 32            # half of image bs — video step does 2x forward
   num_workers: 8
 
 export:
