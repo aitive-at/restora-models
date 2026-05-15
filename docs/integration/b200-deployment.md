@@ -124,7 +124,7 @@ the 60h run — debug the loss recipe first.
 ```sh
 tmux new -s train
 cd /workspace/code/restora-models
-uv run restora train --config configs/b200.yaml --compile
+PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True uv run restora train --config configs/b200.yaml --compile
 # Ctrl-B then D to detach
 ```
 
