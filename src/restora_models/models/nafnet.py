@@ -84,18 +84,28 @@ class NAFNetMultiTask(nn.Module):
         nn.init.zeros_(self.head_ab_abs.weight)
         nn.init.zeros_(self.head_ab_abs.bias)
 
-        # Optional adversarial refinement head — sits AFTER the deterministic
-        # dual-head output. Initialized so its delta contribution is tiny;
-        # the GAN warmup in the trainer ramps the adversarial gradient in
-        # gradually. Enabled by `model.adversarial_refine: true` in config.
-        if cfg.adversarial_refine:
-            self.refine_head: nn.Module | None = AdversarialRefineHead(
+        # Optional refine head — sits AFTER the deterministic dual-head output.
+        # Three options selected by `cfg.refine_type`:
+        #   "diffusion"   - LatentDiffusionRefineHead (SD 1.5 VAE latent space)
+        #   "adversarial" - AdversarialRefineHead (GAN-trained residual)
+        #   "none"        - no refine head; return coarse output directly
+        if cfg.refine_type == "diffusion":
+            from .diffusion_head import LatentDiffusionRefineHead
+            self.refine_head: nn.Module | None = LatentDiffusionRefineHead(
+                feat_dim=nf, num_axes=num_axes,
+                t_inference=cfg.diffusion_t_inference,
+            )
+            self._refine_kind = "diffusion"
+        elif cfg.refine_type == "adversarial":
+            self.refine_head = AdversarialRefineHead(
                 feat_dim=nf, num_axes=num_axes,
                 hidden_dim=cfg.refine_hidden_dim or 128,
                 n_blocks=cfg.refine_n_blocks or 8,
             )
+            self._refine_kind = "adversarial"
         else:
             self.refine_head = None
+            self._refine_kind = "none"
 
     def forward(self, rgb: torch.Tensor, config: torch.Tensor) -> torch.Tensor:
         lab_n = self.rgb_to_lab(rgb)
@@ -134,6 +144,54 @@ class NAFNetMultiTask(nn.Module):
         L_out  = lab_intermediate[:, 0:1]
         coarse_rgb = self.lab_to_rgb(torch.cat([L_out, ab_out], dim=1))
 
-        if self.refine_head is not None:
-            return self.refine_head(features, coarse_rgb, config)
-        return coarse_rgb
+        if self.refine_head is None:
+            return coarse_rgb
+        return self.refine_head(features, coarse_rgb, config)
+
+    def forward_with_extras(
+        self,
+        rgb: torch.Tensor,
+        clean_rgb: torch.Tensor,
+        config: torch.Tensor,
+    ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+        """Training-time forward exposing intermediate tensors.
+
+        For diffusion refine head: returns (decoded_rgb, {"pred_latent", "target_latent"}).
+        For other refine types: returns (forward(rgb, config), {}).
+        """
+        if self._refine_kind != "diffusion":
+            return self.forward(rgb, config), {}
+
+        lab_n = self.rgb_to_lab(rgb)
+        task_vec = self.task_embed(config)
+        x = self.stem(lab_n)
+        skips: list[torch.Tensor] = []
+        for stage, down in zip(self.enc_stages, self.downs):
+            for blk in stage:
+                x = blk(x, task_vec)
+            skips.append(x)
+            x = down(x)
+        x = self.bottle_in(x)
+        for blk in self.bottle:
+            x = blk(x, task_vec)
+        x = self.bottle_out(x)
+        for up, proj, stage, skip in zip(self.ups, self.skip_proj, self.dec_stages, reversed(skips)):
+            x = up(x)
+            x = proj(torch.cat([x, skip], dim=1))
+            for blk in stage:
+                x = blk(x, task_vec)
+        features = x
+        delta_lab_n = self.head_lab_delta(x)
+        ab_pred = self.head_ab_abs(x)
+        lab_intermediate = lab_n + delta_lab_n
+        w = config[:, 0:1].view(-1, 1, 1, 1)
+        ab_out = w * ab_pred + (1.0 - w) * lab_intermediate[:, 1:3]
+        L_out = lab_intermediate[:, 0:1]
+        coarse_rgb = self.lab_to_rgb(torch.cat([L_out, ab_out], dim=1))
+
+        pred_latent, target_latent, decoded_rgb = self.refine_head.forward_with_targets(
+            features, coarse_rgb, clean_rgb, config)
+        return decoded_rgb, {
+            "pred_latent": pred_latent,
+            "target_latent": target_latent,
+        }
