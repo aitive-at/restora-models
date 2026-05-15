@@ -102,3 +102,12 @@ def test_data_root_expands_env_var(monkeypatch):
     cfg = DataConfig(root="$REFINE_TEST_DATA_DIR/sub",
                      loader=LoaderConfig(), augment=AugmentConfig())
     assert cfg.root == "/tmp/refine-test-data/sub"
+
+
+def test_b200_diffusion_yaml_loads():
+    cfg = load_config(ROOT / "b200-diffusion.yaml")
+    assert cfg.model.refine_type == "diffusion"
+    assert cfg.model.diffusion_t_inference == 0.2
+    names = [l.name for l in cfg.losses]
+    assert "l1_latent" in names
+    assert "gan" not in names
