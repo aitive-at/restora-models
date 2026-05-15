@@ -51,6 +51,7 @@ def export_pnnx_from_model(
     fixed_config: list[float] | None = None,
     task_map: dict | None = None,
     check_trace: bool = False,
+    keep_debug_scripts: bool = False,
 ) -> None:
     """Export a restora model to PNNX format (and ncnn as a byproduct).
 
@@ -77,6 +78,11 @@ def export_pnnx_from_model(
             Default False because the model has small Lab-conversion
             numerical paths that produce sub-1e-6 differences on retrace,
             which would otherwise fail the check.
+        keep_debug_scripts: if True, the auto-generated `_pnnx.py` and
+            `_ncnn.py` recreate scripts are kept in the run directory.
+            Default False — those scripts have known generation bugs for
+            some ops (e.g. GroupNorm) and aren't needed for deployment;
+            the `.ncnn.bin/.param` pair is what consumers load.
 
     The function blocks until PNNX finishes (~10-60s on a small model,
     minutes on a NAFNet-large). The PNNX binary runs as a subprocess
@@ -168,3 +174,15 @@ def export_pnnx_from_model(
     if task_map is not None:
         sidecar = Path(f"{base}.task_map.json")
         sidecar.write_text(json.dumps(task_map, indent=2))
+
+    # Clean up the auto-generated recreate scripts unless the caller asked
+    # to keep them for debugging. They're not used at deployment time —
+    # consumers load `.ncnn.bin/.param` only — and the `_pnnx.py` script
+    # has a known PNNX generation bug for GroupNorm (see the comment on
+    # the exception handler above). Leaving broken debug artifacts in
+    # the run directory is worse than removing them.
+    if not keep_debug_scripts:
+        for suffix in ("_pnnx.py", "_ncnn.py"):
+            p = Path(f"{base}{suffix}")
+            if p.exists():
+                p.unlink()

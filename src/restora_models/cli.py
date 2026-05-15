@@ -264,6 +264,11 @@ def export(
         None, "--bake-axes",
         help="Comma-separated 5-axis vector to bake in, e.g. '1,0,1,0,0' "
              "for colorize+sharpen. Mutually exclusive with --task."),
+    keep_pnnx_debug: bool = typer.Option(
+        False, "--keep-pnnx-debug/--no-keep-pnnx-debug",
+        help="(--format pnnx only) Keep the auto-generated _pnnx.py and "
+             "_ncnn.py recreate scripts. Off by default — they have known "
+             "generation bugs for some ops and aren't needed for deployment."),
 ) -> None:
     """Export a trained refine checkpoint to ONNX or PNNX/ncnn.
 
@@ -326,7 +331,7 @@ def export(
             m, num_axes=len(AXES), input_size=input_size,
             export_path=output, dynamic_hw=dynamic_hw,
             fp16=(precision == "fp16"), fixed_config=fixed_config,
-            task_map=task_map,
+            task_map=task_map, keep_debug_scripts=keep_pnnx_debug,
         )
     else:
         from restora_models.export.onnx import export_onnx_from_model

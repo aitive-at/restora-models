@@ -103,3 +103,36 @@ def test_pnnx_export_writes_task_map_sidecar(tmp_path, tiny_model):
     assert sidecar.exists()
     loaded = json.loads(sidecar.read_text())
     assert loaded == task_map
+
+
+@pytest.mark.skipif(
+    not os.environ.get("REFINE_SLOW"),
+    reason="pnnx export is slow; set REFINE_SLOW=1 to run",
+)
+def test_pnnx_default_removes_debug_recreate_scripts(tmp_path, tiny_model):
+    """The auto-generated _pnnx.py / _ncnn.py scripts should be cleaned up
+    by default — they're debug-only and have known generation bugs."""
+    out = tmp_path / "model.pt"
+    export_pnnx_from_model(
+        tiny_model, num_axes=5, input_size=32,
+        export_path=out, fp16=False,    # keep_debug_scripts defaults to False
+    )
+    assert not (tmp_path / "model_pnnx.py").exists()
+    assert not (tmp_path / "model_ncnn.py").exists()
+    # Deployment artifacts must still be there
+    assert (tmp_path / "model.ncnn.bin").exists()
+    assert (tmp_path / "model.ncnn.param").exists()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("REFINE_SLOW"),
+    reason="pnnx export is slow; set REFINE_SLOW=1 to run",
+)
+def test_pnnx_keep_debug_scripts_preserves_recreate_files(tmp_path, tiny_model):
+    out = tmp_path / "model.pt"
+    export_pnnx_from_model(
+        tiny_model, num_axes=5, input_size=32,
+        export_path=out, fp16=False, keep_debug_scripts=True,
+    )
+    assert (tmp_path / "model_pnnx.py").exists()
+    assert (tmp_path / "model_ncnn.py").exists()
