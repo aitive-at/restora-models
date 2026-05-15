@@ -54,3 +54,23 @@ def test_compound_config_defaults():
     assert c.axis_probs.colorize == 0.5
     assert c.axis_probs.sharpen == 0.5
     assert "sigma_range" in c.degradations.denoise
+
+
+def test_model_config_refine_type_defaults():
+    from restora_models.config import ModelConfig
+    m = ModelConfig()
+    assert m.refine_type == "none"
+    assert m.diffusion_t_inference == 0.2
+
+
+def test_model_config_refine_type_accepts_diffusion():
+    from restora_models.config import ModelConfig
+    m = ModelConfig(refine_type="diffusion", diffusion_t_inference=0.3)
+    assert m.refine_type == "diffusion"
+    assert m.diffusion_t_inference == 0.3
+
+
+def test_model_config_legacy_adversarial_refine_coerces_to_refine_type():
+    from restora_models.config import ModelConfig
+    m = ModelConfig(adversarial_refine=True)
+    assert m.refine_type == "adversarial"

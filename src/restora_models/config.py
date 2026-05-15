@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 import os
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------- model ----------------------------------------------------------
@@ -24,13 +24,24 @@ class ModelConfig(BaseModel):
     bottle_blocks: int | None = None
     hidden_dim: int | None = None
     task_embed_dim: int = 128
-    # Adversarial refine head — residual generator that sits after the
-    # deterministic dual-head output. Trained with adversarial + perceptual
-    # losses for improved perceptual quality on the hard ill-posed tasks
-    # (colorize, sharpen). Default OFF for backward compat with old configs.
+    # Refine head type. Three options:
+    #   "none"        - just the deterministic dual-head output
+    #   "adversarial" - AdversarialRefineHead trained with GAN (current production)
+    #   "diffusion"   - LatentDiffusionRefineHead in SD 1.5 VAE latent space
+    refine_type: Literal["none", "adversarial", "diffusion"] = "none"
+    # Legacy: implies refine_type="adversarial" when True. Coerced via
+    # model_validator below for back-compat with old configs / ckpts.
     adversarial_refine: bool = False
     refine_hidden_dim: int | None = None    # default 128 if None
     refine_n_blocks: int | None = None      # default 8 if None
+    # Diffusion-head-specific (ignored when refine_type != "diffusion")
+    diffusion_t_inference: float = 0.2
+
+    @model_validator(mode="after")
+    def _coerce_legacy_adversarial_refine(self):
+        if self.adversarial_refine and self.refine_type == "none":
+            self.refine_type = "adversarial"
+        return self
 
 
 # ---------- data -----------------------------------------------------------
