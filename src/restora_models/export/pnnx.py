@@ -37,6 +37,8 @@ from typing import Any
 import torch
 from torch import nn
 
+from restora_models.utils.color import graph_friendly_color
+
 from .wrapper import ONNXExportWrapper, ONNXExportWrapperBaked
 
 
@@ -138,22 +140,30 @@ def export_pnnx_from_model(
     # it omits constructor args, which raises a TypeError on import. The
     # actual deployment files (.ncnn.bin/.param) are written BEFORE that
     # import, so we tolerate the validation failure if those files landed.
+    #
+    # graph_friendly_color() switches the piecewise color functions
+    # (_srgb_to_linear, _linear_to_srgb, _f_lab, _f_lab_inv) from
+    # torch.where to a smooth-blend formulation that uses only stock
+    # ncnn ops (BinaryOp + Clip). Without this, the exported .ncnn.param
+    # references torch.le / torch.gt / torch.where which stock ncnn's
+    # layer registry doesn't know about, and load_param fails at runtime.
     try:
-        pnnx.export(
-            wrapped,
-            ptpath=str(export_path) if export_path.suffix == ".pt" else f"{base}.pt",
-            inputs=ex_inputs,
-            inputs2=ex_inputs2,
-            pnnxparam=f"{base}.pnnx.param",
-            pnnxbin=f"{base}.pnnx.bin",
-            pnnxpy=f"{base}_pnnx.py",
-            pnnxonnx=f"{base}.pnnx.onnx",
-            ncnnparam=ncnn_param,
-            ncnnbin=ncnn_bin,
-            ncnnpy=f"{base}_ncnn.py",
-            check_trace=check_trace,
-            fp16=fp16,
-        )
+        with graph_friendly_color():
+            pnnx.export(
+                wrapped,
+                ptpath=str(export_path) if export_path.suffix == ".pt" else f"{base}.pt",
+                inputs=ex_inputs,
+                inputs2=ex_inputs2,
+                pnnxparam=f"{base}.pnnx.param",
+                pnnxbin=f"{base}.pnnx.bin",
+                pnnxpy=f"{base}_pnnx.py",
+                pnnxonnx=f"{base}.pnnx.onnx",
+                ncnnparam=ncnn_param,
+                ncnnbin=ncnn_bin,
+                ncnnpy=f"{base}_ncnn.py",
+                check_trace=check_trace,
+                fp16=fp16,
+            )
     except TypeError as exc:
         # Diagnostic-only — if the deployment files are present, surface a
         # warning rather than failing the whole export.

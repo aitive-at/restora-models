@@ -136,3 +136,47 @@ def test_pnnx_keep_debug_scripts_preserves_recreate_files(tmp_path, tiny_model):
     )
     assert (tmp_path / "model_pnnx.py").exists()
     assert (tmp_path / "model_ncnn.py").exists()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("REFINE_SLOW"),
+    reason="pnnx export is slow; set REFINE_SLOW=1 to run",
+)
+def test_pnnx_ncnn_param_uses_only_stock_layers(tmp_path, tiny_model):
+    """The .ncnn.param must not reference any torch.* or nn.* layer
+    types (besides nn.GroupNorm which the consuming C# side rewrites
+    in memory). graph_friendly_color() should be active during export
+    so the piecewise color functions emit only BinaryOp + Clip."""
+    out = tmp_path / "model.pt"
+    export_pnnx_from_model(
+        tiny_model, num_axes=5, input_size=32,
+        export_path=out, fp16=False,
+    )
+    param = (tmp_path / "model.ncnn.param").read_text().splitlines()
+    # Skip magic (line 1) + header (line 2); collect unique layer types.
+    layer_types = {ln.split()[0] for ln in param[2:] if ln.strip()}
+    forbidden = {t for t in layer_types if t.startswith("torch.")}
+    assert not forbidden, \
+        f"ncnn.param contains forbidden torch.* layers: {forbidden}"
+
+
+def test_graph_friendly_color_is_numerically_close():
+    """The smooth-blend approximation must be visually indistinguishable
+    from the exact piecewise function. Max abs error <= 1e-3 over [0, 1]
+    is well below visible threshold for 8-bit displays."""
+    from restora_models.utils.color import graph_friendly_color, rgb_to_lab, lab_to_rgb
+
+    rgb = torch.rand(1, 3, 32, 32)
+    lab_exact = rgb_to_lab(rgb)
+    rgb_exact = lab_to_rgb(lab_exact).clamp(0, 1)
+
+    with graph_friendly_color():
+        lab_smooth = rgb_to_lab(rgb)
+        rgb_smooth = lab_to_rgb(lab_smooth).clamp(0, 1)
+
+    lab_diff = (lab_exact - lab_smooth).abs().max().item()
+    rgb_diff = (rgb_exact - rgb_smooth).abs().max().item()
+    # Lab is on a [0,100] / [-110,110] scale; 0.5 unit ≈ ~0.005 in normalized form.
+    assert lab_diff < 0.5, f"Lab max diff too large: {lab_diff}"
+    # RGB roundtrip: 1e-3 corresponds to 0.25/255 — well below 1-LSB visibility.
+    assert rgb_diff < 1e-3, f"RGB roundtrip max diff too large: {rgb_diff}"

@@ -4,10 +4,61 @@ Conventions match cv2's `COLOR_RGB2LAB` for float32 inputs in [0, 1]:
 - L in [0, 100]
 - a, b in approximately [-128, 127]
 All ops are pure-tensor so they autograd through and run on GPU.
+
+Graph-friendly mode
+-------------------
+
+The four piecewise color functions (_srgb_to_linear, _linear_to_srgb,
+_f_lab, _f_lab_inv) use `torch.where(condition, low, high)` to express
+the piecewise branches. This is exact and bit-perfect, but it produces
+`torch.where`, `torch.le`, and `torch.gt` ops in the exported pnnx
+graph. Stock ncnn doesn't have those ops in its layer registry.
+
+When `graph_friendly_color()` is active (typically via the PNNX export
+wrapper), the four functions switch to a smooth-blend formulation that
+uses only `BinaryOp` (sub, mul, add) and `Clip` (clamp) — all stock
+ncnn ops. The numerical deviation is <0.001 within a ±0.0005 band
+around each threshold and zero outside that band, because the
+piecewise functions are continuous at their thresholds.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
+
 import torch
+
+_USE_GRAPH_FRIENDLY = False
+
+
+@contextmanager
+def graph_friendly_color():
+    """Within this context, the piecewise color functions use the smooth
+    blend formulation (stock-ncnn-friendly). Used by the PNNX export
+    wrapper; not used at training time."""
+    global _USE_GRAPH_FRIENDLY
+    prev = _USE_GRAPH_FRIENDLY
+    _USE_GRAPH_FRIENDLY = True
+    try:
+        yield
+    finally:
+        _USE_GRAPH_FRIENDLY = prev
+
+
+def _smooth_step(x: torch.Tensor, threshold: float, sharpness: float = 1000.0) -> torch.Tensor:
+    """Approximation of `(x > threshold).float()` using only sub + mul + clip.
+
+    At sharpness=1000 the transition spans ~±0.0005 around the threshold;
+    outside that band the result is exactly 0 or 1. At the threshold the
+    result is 0.5 — fine because the piecewise functions are continuous
+    at their thresholds, so the blended value matches both branches there.
+    """
+    return torch.clamp(sharpness * (x - threshold) + 0.5, 0.0, 1.0)
+
+
+def _smooth_select(mask_high: torch.Tensor, low: torch.Tensor, high: torch.Tensor) -> torch.Tensor:
+    """Equivalent to torch.where(mask_high.bool(), high, low) for binary
+    masks; smoothly interpolates near the threshold. Uses only BinaryOp."""
+    return (1.0 - mask_high) * low + mask_high * high
 
 _RGB2XYZ = torch.tensor(
     [
@@ -28,26 +79,38 @@ _WHITE = torch.tensor([0.95047, 1.0, 1.08883])  # D65
 
 def _srgb_to_linear(c: torch.Tensor) -> torch.Tensor:
     threshold = 0.04045
-    return torch.where(c <= threshold, c / 12.92, ((c + 0.055) / 1.055) ** 2.4)
+    low = c / 12.92
+    high = ((c + 0.055) / 1.055) ** 2.4
+    if _USE_GRAPH_FRIENDLY:
+        return _smooth_select(_smooth_step(c, threshold), low, high)
+    return torch.where(c <= threshold, low, high)
 
 
 def _linear_to_srgb(c: torch.Tensor) -> torch.Tensor:
     threshold = 0.0031308
-    return torch.where(
-        c <= threshold, c * 12.92, 1.055 * c.clamp(min=1e-8).pow(1 / 2.4) - 0.055
-    )
+    low = c * 12.92
+    high = 1.055 * c.clamp(min=1e-8).pow(1 / 2.4) - 0.055
+    if _USE_GRAPH_FRIENDLY:
+        return _smooth_select(_smooth_step(c, threshold), low, high)
+    return torch.where(c <= threshold, low, high)
 
 
 def _f_lab(t: torch.Tensor) -> torch.Tensor:
     delta = 6.0 / 29.0
-    return torch.where(
-        t > delta**3, t.clamp(min=1e-8).pow(1.0 / 3.0), t / (3 * delta**2) + 4.0 / 29.0
-    )
+    high = t.clamp(min=1e-8).pow(1.0 / 3.0)
+    low = t / (3 * delta**2) + 4.0 / 29.0
+    if _USE_GRAPH_FRIENDLY:
+        return _smooth_select(_smooth_step(t, delta**3), low, high)
+    return torch.where(t > delta**3, high, low)
 
 
 def _f_lab_inv(t: torch.Tensor) -> torch.Tensor:
     delta = 6.0 / 29.0
-    return torch.where(t > delta, t.pow(3), 3 * delta**2 * (t - 4.0 / 29.0))
+    high = t.pow(3)
+    low = 3 * delta**2 * (t - 4.0 / 29.0)
+    if _USE_GRAPH_FRIENDLY:
+        return _smooth_select(_smooth_step(t, delta), low, high)
+    return torch.where(t > delta, high, low)
 
 
 def rgb_to_lab(rgb: torch.Tensor) -> torch.Tensor:
