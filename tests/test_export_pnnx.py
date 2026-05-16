@@ -160,6 +160,68 @@ def test_pnnx_ncnn_param_uses_only_stock_layers(tmp_path, tiny_model):
         f"ncnn.param contains forbidden torch.* layers: {forbidden}"
 
 
+def test_convert_groupnorm_affine_for_ncnn_is_numerical_noop():
+    """The affine=False -> affine=True (gamma=1, beta=0) replacement must
+    produce bit-identical output to the original module."""
+    import copy
+    from restora_models.export.pnnx import _convert_groupnorm_affine_for_ncnn
+
+    class M(torch.nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.norm = torch.nn.GroupNorm(num_groups=4, num_channels=16, affine=False)
+        def forward(self, x): return self.norm(x)
+
+    m_orig = M().train(False)
+    m_copy = copy.deepcopy(m_orig)
+    _convert_groupnorm_affine_for_ncnn(m_copy)
+
+    # The replaced module must now have affine=True with neutral values
+    assert m_copy.norm.affine is True
+    assert torch.allclose(m_copy.norm.weight, torch.ones_like(m_copy.norm.weight))
+    assert torch.allclose(m_copy.norm.bias, torch.zeros_like(m_copy.norm.bias))
+
+    # And forward output must be bit-identical (modulo floating-point determinism)
+    x = torch.randn(2, 16, 8, 8)
+    with torch.no_grad():
+        y_orig = m_orig(x)
+        y_copy = m_copy(x)
+    assert torch.allclose(y_orig, y_copy, atol=1e-6), \
+        f"affine swap not bit-identical: max diff {(y_orig - y_copy).abs().max().item()}"
+
+
+@pytest.mark.skipif(
+    not os.environ.get("REFINE_SLOW"),
+    reason="pnnx export is slow; set REFINE_SLOW=1 to run",
+)
+def test_pnnx_emits_stock_groupnorm_with_params(tmp_path):
+    """After the affine-rewrite, the .ncnn.param must contain `GroupNorm`
+    lines with the required `0=` (groups), `1=` (channels), `2=` (eps)
+    parameters — not the `nn.GroupNorm` extension layer."""
+    cfg = ModelConfig(
+        type="nafnet", size="tiny", input_size=64,
+        nf=8, enc_depths=[1, 1, 1, 1], bottle_blocks=1, hidden_dim=32,
+        refine_type="adversarial",   # this engages the AdaLN-based refine head
+        refine_hidden_dim=16, refine_n_blocks=2,
+    )
+    tiny = build_model(cfg, num_axes=5)
+    out = tmp_path / "model.pt"
+    export_pnnx_from_model(tiny, num_axes=5, input_size=32,
+                            export_path=out, fp16=False)
+    param = (tmp_path / "model.ncnn.param").read_text()
+    # No nn.GroupNorm
+    assert "nn.GroupNorm" not in param, \
+        "ncnn.param still contains nn.GroupNorm; affine rewrite didn't take"
+    # At least one stock GroupNorm with the three required params
+    found_stock = False
+    for line in param.splitlines():
+        if line.startswith("GroupNorm "):
+            assert "0=" in line and "1=" in line and "2=" in line, \
+                f"GroupNorm line missing params: {line!r}"
+            found_stock = True
+    assert found_stock, "no stock `GroupNorm` lines found in .ncnn.param"
+
+
 def test_graph_friendly_color_is_numerically_close():
     """The smooth-blend approximation must be visually indistinguishable
     from the exact piecewise function. Max abs error <= 1e-3 over [0, 1]

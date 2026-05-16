@@ -34,12 +34,53 @@ import json
 from pathlib import Path
 from typing import Any
 
+import copy
+
 import torch
 from torch import nn
 
 from restora_models.utils.color import graph_friendly_color
 
 from .wrapper import ONNXExportWrapper, ONNXExportWrapperBaked
+
+
+def _convert_groupnorm_affine_for_ncnn(model: nn.Module) -> None:
+    """In-place: replace every `nn.GroupNorm(affine=False)` submodule with
+    `nn.GroupNorm(affine=True)` initialized to gamma=1, beta=0.
+
+    Why: pnnx's GroupNorm-to-ncnn converter derives `num_channels` from
+    the gamma weight tensor's shape. With `affine=False` there's no
+    gamma, the converter prints "Cannot resolve GroupNorm num_channels
+    when affine=False" and falls back to emitting the layer type as
+    `nn.GroupNorm` (a pnnx extension), with the parameters stored in a
+    custom .bin layout. Stock ncnn's `GroupNorm` layer doesn't know how
+    to parse that.
+
+    Setting gamma=1 and beta=0 makes affine=True a numerical no-op:
+    `(x - mean) / sqrt(var + eps) * 1 + 0` is exactly the same as
+    `affine=False`. The replacement is done on the export-time copy of
+    the model; the trained checkpoint and the trainable model are
+    untouched.
+    """
+    for name, mod in list(model.named_modules()):
+        if not isinstance(mod, nn.GroupNorm) or mod.affine:
+            continue
+        new = nn.GroupNorm(
+            num_groups=mod.num_groups,
+            num_channels=mod.num_channels,
+            eps=mod.eps,
+            affine=True,
+        )
+        nn.init.ones_(new.weight)
+        nn.init.zeros_(new.bias)
+        new.to(next(mod.parameters(recurse=False), torch.zeros(1)).device)
+        new.train(False)
+        # Walk to parent and replace the attribute
+        parent: nn.Module = model
+        *path, leaf = name.split(".")
+        for part in path:
+            parent = getattr(parent, part)
+        setattr(parent, leaf, new)
 
 
 def export_pnnx_from_model(
@@ -95,9 +136,14 @@ def export_pnnx_from_model(
     export_path = Path(export_path)
     export_path.parent.mkdir(parents=True, exist_ok=True)
 
+    # Work on a deep copy so the in-place GroupNorm rewrite below doesn't
+    # disturb the caller's model (which may be used afterwards for ONNX
+    # export, inference, etc.).
+    model = copy.deepcopy(model).train(False)
+    _convert_groupnorm_affine_for_ncnn(model)
+
     # Build the export wrapper (same pattern as the ONNX exporter so the
     # I/O contract stays in lockstep between the two formats).
-    model = model.train(False)
     if fixed_config is not None:
         if len(fixed_config) != num_axes:
             raise ValueError(
