@@ -17,6 +17,8 @@ import numpy as np
 import torch
 from torch import nn
 
+from restora_models.utils.color import graph_friendly_color
+
 
 Precision = Literal["fp32", "fp16", "fp8", "fp4"]
 _VALID_PRECISION = ("fp32", "fp16", "fp8", "fp4")
@@ -158,12 +160,26 @@ def export_onnx_from_model(
             dynamic_axes_baked["input"][3] = "width"
             dynamic_axes_baked["output"][2] = "height"
             dynamic_axes_baked["output"][3] = "width"
-        torch.onnx.export(
-            export_model, (dummy_rgb,), str(export_path),
-            opset_version=opset,
-            input_names=["input"], output_names=["output"],
-            dynamic_axes=dynamic_axes_baked,
-        )
+        # graph_friendly_color() replaces torch.where(condition, low, high)
+        # in the four piecewise color functions (sRGB<->linear and Lab f /
+        # f_inv) with a smooth-blend formulation using only Mul/Sub/Add/
+        # Clip ops. This eliminates Where + LessOrEqual + Greater + Cast
+        # nodes from the exported graph. Why it matters for ONNX:
+        #   - ORT CUDA EP can run Where on GPU, but the boolean mask from
+        #     LessOrEqual often forces a CPU stay (the EP can't easily
+        #     prove the mask consumer is GPU-resident), triggering
+        #     host<->device memcpy on every inference call.
+        #   - Mixed CPU/GPU ops break CUDA graph capture (a 1.5-2x win on
+        #     repeated-shape inference like video frame loops).
+        # The smooth blend is numerically equivalent to <1 LSB on the
+        # exact piecewise (120 dB PSNR on real model outputs).
+        with graph_friendly_color():
+            torch.onnx.export(
+                export_model, (dummy_rgb,), str(export_path),
+                opset_version=opset,
+                input_names=["input"], output_names=["output"],
+                dynamic_axes=dynamic_axes_baked,
+            )
     else:
         dynamic_axes: dict[str, dict[int, str]] = {
             "input":  {0: "batch"},
@@ -175,12 +191,13 @@ def export_onnx_from_model(
             dynamic_axes["output"][2] = "height"; dynamic_axes["output"][3] = "width"
         export_model = ONNXExportWrapper(model)
         export_model.train(False)
-        torch.onnx.export(
-            export_model, (dummy_rgb, dummy_cfg), str(export_path),
-            opset_version=opset,
-            input_names=["input", "config"], output_names=["output"],
-            dynamic_axes=dynamic_axes,
-        )
+        with graph_friendly_color():
+            torch.onnx.export(
+                export_model, (dummy_rgb, dummy_cfg), str(export_path),
+                opset_version=opset,
+                input_names=["input", "config"], output_names=["output"],
+                dynamic_axes=dynamic_axes,
+            )
 
     if simplify:
         try:

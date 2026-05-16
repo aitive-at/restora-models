@@ -27,6 +27,29 @@ def test_fp16_export_round_trip(tmp_path):
     assert fp16 > fp32, f"expected fp16 dominance; got fp16={fp16} fp32={fp32}"
 
 
+@pytest.mark.skipif(not os.environ.get("REFINE_SLOW"), reason="slow ONNX export, set REFINE_SLOW=1")
+def test_onnx_export_has_no_cpu_bound_comparison_ops(tmp_path):
+    """The exported ONNX must NOT contain Where / LessOrEqual / Greater
+    / GreaterOrEqual ops. These come from torch.where in the piecewise
+    color conversion and force CPU<->GPU memcpy in ORT's CUDA EP, also
+    blocking CUDA graph capture. The graph_friendly_color() context
+    manager (wrapped around torch.onnx.export) replaces them with
+    Mul/Sub/Add/Clip via the smooth-blend formulation."""
+    m = build_model(ModelConfig(type="nafnet", size="tiny", input_size=32), num_axes=5)
+    out = tmp_path / "model.onnx"
+    export_onnx_from_model(
+        m, num_axes=5, input_size=32, export_path=out,
+        opset=17, simplify=True, verify_parity=False,
+        dynamic_hw=True, task_map=None, precision="fp32",
+    )
+    import onnx
+    om = onnx.load(str(out), load_external_data=False)
+    forbidden = {"Where", "LessOrEqual", "Less", "Greater", "GreaterOrEqual"}
+    present = {n.op_type for n in om.graph.node} & forbidden
+    assert not present, \
+        f"ONNX export still contains CPU-bound comparison ops: {present}"
+
+
 def test_fp8_raises_capability_error_on_unsupported_runtime(tmp_path):
     """If the local onnxruntime build lacks fp8 support, fp8 export must raise a
     clear error message naming the missing capability — not silently fall back."""
