@@ -1,0 +1,18 @@
+# Quick smoke for local RTX 6000 Blackwell — ~30 min for 5000 steps.
+# Use this for pipeline validation; switch to local-temporal.yaml for the
+# real run.
+
+defaults: local-temporal.yaml
+
+run:
+  name: "local_smoke"
+
+train:
+  total_steps: 5000
+  compile: false       # off for fast iteration; production has it on
+  log_every: 25
+  save_every: 1000
+
+scheduler:
+  total_steps: 5000
+  warmup_steps: 500

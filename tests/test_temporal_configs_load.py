@@ -18,11 +18,11 @@ def test_local_temporal_config_loads():
     assert cfg.data.sources[0]["type"] == "reds"
 
 
-def test_b200_temporal_config_loads():
-    cfg = load_config(Path("configs/b200-temporal.yaml"))
-    assert cfg.run.name == "b200_temporal"
-    assert cfg.model.type == "temporal_restora_large"
-    assert len(cfg.data.sources) == 2
+def test_local_smoke_config_loads():
+    cfg = load_config(Path("configs/local-smoke.yaml"))
+    assert cfg.run.name == "local_smoke"
+    assert cfg.train.total_steps == 5000
+    assert cfg.train.compile is False
 
 
 def test_temporal_v1_preset_has_expected_losses():

@@ -1,6 +1,14 @@
 # RTX PRO 6000 Blackwell (96GB VRAM, 45GB system RAM in WSL2)
-# Smoke target: ~60 min for 5000 steps with small model.
-# Inherits configs/default.yaml — only the deltas are listed below.
+# Production target: ~12-15 hours for 100k steps with temporal_restora_small.
+#
+# Tuned per E2E validation (2026-05-17):
+#  - lr 2e-4 (1e-3 diverged under LPIPS pressure)
+#  - bs 12 (96GB VRAM has plenty of headroom for the 27M model at 256x256)
+#  - num_workers capped at 6 (WSL2 system RAM is 45GB; prior 24-worker runs
+#    crashed the host via dataloader RAM pressure, NOT VRAM)
+#  - compile: true (~20% throughput, requires torch 2.4+)
+#  - chroma_lab / colorfulness weights bumped in temporal_v1 preset (see
+#    src/restora_models/config.py) for colorize axis convergence
 
 defaults: default.yaml
 
@@ -12,7 +20,7 @@ model:
 
 data:
   loader:
-    batch_size: 4
+    batch_size: 12
     num_workers: 6
     prefetch_factor: 2
   sources:
@@ -26,17 +34,18 @@ data:
   film_overlay_root: "~/data/film-overlays"
 
 train:
-  total_steps: 5000
+  total_steps: 100000
   amp: bf16
-  compile: false
+  compile: true
+  compile_mode: default
   memory_format: channels_last
-  lr: 1.0e-3
+  lr: 2.0e-4
   weight_decay: 0.01
-  log_every: 25
-  save_every: 1000
+  log_every: 100
+  save_every: 5000
 
 scheduler:
-  total_steps: 5000
-  warmup_steps: 500
+  total_steps: 100000
+  warmup_steps: 1000
 
 losses: !preset temporal_v1
