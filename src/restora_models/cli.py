@@ -102,17 +102,19 @@ def train(
 
 @app.command(name="train-flow-distill")
 def train_flow_distill(
-    config: Optional[Path] = typer.Option(None, "--config"),
+    config: Optional[Path] = typer.Option(..., "--config", exists=True),
     out_dir: Path = typer.Option(..., "--out", "-o"),
+    steps: int = typer.Option(5000, "--steps"),
+    batch_size: int = typer.Option(4, "--batch-size"),
+    lr: float = typer.Option(3e-4, "--lr"),
 ) -> None:
-    """Pre-train the static-unroll FlowDistill student. Implemented in Phase 17."""
-    try:
-        from restora_models.train.flow_distill import run_flow_distill
-    except ImportError:
-        typer.secho("train-flow-distill: not implemented yet (Phase 17 pending)",
-                    fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=2)
-    run_flow_distill(out_dir=out_dir, config_path=config)
+    """Pre-train the static-unroll FlowDistill student against torchvision RAFT-large."""
+    from restora_models.train.flow_distill import run_flow_distill
+    final = run_flow_distill(
+        out_dir=out_dir, config_path=config,
+        steps=steps, batch_size=batch_size, lr=lr,
+    )
+    typer.echo(f"flow-distill checkpoint: {final}")
 
 
 # ---- train-pipeline (Phase 18 orchestrator) -------------------------------
