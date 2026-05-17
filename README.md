@@ -46,9 +46,9 @@ uv run restora prepare-data reds --out ~/data/reds
 #    Old-film overlay textures (DeepRemaster pack, 898 MB):
 uv run restora prepare-data film-overlays --out ~/data/film-overlays
 
-# 3. Train (local smoke or B200 production)
-uv run restora train --config configs/local-temporal.yaml  # ~30 min on RTX 6000
-uv run restora train --config configs/b200-temporal.yaml --compile  # ~50 h B200
+# 3. Train (on RTX PRO 6000 Blackwell, 96GB VRAM)
+uv run restora train --config configs/local-smoke.yaml     # ~30 min smoke (5k steps)
+uv run restora train --config configs/local-temporal.yaml  # ~12-15 h production (100k steps)
 
 # 4. Export to ONNX (dynamic spatial dims; runs at any input resolution)
 uv run restora export --model runs/<run>/final.pt \
