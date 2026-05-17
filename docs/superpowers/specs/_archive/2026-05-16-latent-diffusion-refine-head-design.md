@@ -310,7 +310,7 @@ applied in RGB space upstream.
 
 After Stage 1, compare against the current production model on:
 
-1. **Per-axis PSNR delta** via `scripts/eval_checkpoints.py`.
+1. **Per-axis PSNR delta** via `restora compare`.
    - colorize: must improve or hold ≥ -0.5 dB (perceptual axes can lose
      PSNR without losing quality)
    - sharpen: must improve
