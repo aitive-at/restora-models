@@ -1,0 +1,42 @@
+# RTX PRO 6000 Blackwell (96GB VRAM, 45GB system RAM in WSL2)
+# Smoke target: ~60 min for 5000 steps with small model.
+# Inherits configs/default.yaml — only the deltas are listed below.
+
+defaults: default.yaml
+
+run:
+  name: "local_temporal"
+
+model:
+  type: "temporal_restora_small"
+
+data:
+  loader:
+    batch_size: 4
+    num_workers: 6
+    prefetch_factor: 2
+  sources:
+    - type: reds
+      root: "~/data/reds"
+      split: "train_sharp"        # tried first; falls back to flat layout if missing
+      window: 7
+      stride: 1
+      crop: 256
+      weight: 4.0
+  film_overlay_root: "~/data/film-overlays"
+
+train:
+  total_steps: 5000
+  amp: bf16
+  compile: false
+  memory_format: channels_last
+  lr: 1.0e-3
+  weight_decay: 0.01
+  log_every: 25
+  save_every: 1000
+
+scheduler:
+  total_steps: 5000
+  warmup_steps: 500
+
+losses: !preset temporal_v1
