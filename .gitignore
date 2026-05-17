@@ -25,3 +25,4 @@ samples/
 # Local Claude Code state
 .claude/
 trained/
+*.pyc
