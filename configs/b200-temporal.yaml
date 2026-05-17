@@ -1,0 +1,79 @@
+# B200 datacenter GPU (180 GB VRAM, 28 CPU cores, 280 GB RAM).
+# Cloud-rental target, distinct from `local-temporal.yaml`. Expects the
+# server-prep script (`scripts/b200/prepare.sh`) to have populated
+# `/workspace/data/` with REDS + film-overlay textures.
+#
+# Sized for ~20-26 h wall-clock at the B200's expected throughput
+# (~50-80 img/s after compile warmup). If you have the full rental
+# window and want max quality, override `--total-steps 100000` on the
+# CLI — the cosine schedule rescales with `scheduler.total_steps`.
+#
+# Tuning notes (relative to local-temporal.yaml at bs=32 / lr=2e-4):
+#  - bs 32 -> 64. At ~1.72 GB/sample this lands ~110 GB on the 180 GB
+#    B200, leaving 70 GB for compile graph + optimizer state. bs=80
+#    fits if you want to push it but trims the headroom to ~40 GB.
+#  - lr 2e-4 -> 3e-4. Local didn't linear-scale (kept 2e-4 from bs=12
+#    to bs=32), so a full linear-scale to 4e-4 felt aggressive given
+#    the 1e-3 divergence seen under LPIPS pressure. 3e-4 splits the
+#    difference; bump if convergence stalls.
+#  - warmup 1000 -> 1500. Longer ramp for the higher peak LR.
+#  - num_workers 12 -> 16 (28 cores; degradation runs in workers).
+#  - total_steps 60k -> 80k. ~5.1 M samples vs local's 3.8 M — uses
+#    the extra B200 compute for genuinely more learning signal, not
+#    just matching the local sample count.
+
+defaults: default.yaml
+
+run:
+  name: "b200_temporal"
+  root: "/workspace/runs"
+
+model:
+  type: "temporal_restora_small"
+
+data:
+  loader:
+    batch_size: 64
+    num_workers: 16
+    prefetch_factor: 4
+  sources:
+    # Both REDS splits as training data. VideoWindowDataset normalises
+    # the weights to sampling probabilities; sizing them by sequence
+    # count (240 train_sharp vs 30 val_sharp = 8:1) treats both as one
+    # homogeneous pool so the model sees data in proportion to its
+    # abundance. Bump val_sharp's weight (e.g. 1.0 → 2.0) if you want
+    # to oversample the smaller split as a regulariser.
+    - type: reds
+      root: "/workspace/data/reds"
+      split: "train_sharp"
+      window: 7
+      stride: 1
+      crop: 256
+      weight: 4.0
+    - type: reds
+      root: "/workspace/data/reds"
+      split: "val_sharp"
+      window: 7
+      stride: 1
+      crop: 256
+      weight: 0.5
+  film_overlay_root: "/workspace/data/film-overlays"
+
+train:
+  total_steps: 80000
+  amp: bf16
+  compile: true
+  compile_mode: default
+  memory_format: channels_last
+  lr: 3.0e-4
+  weight_decay: 0.01
+  save_every: 5000
+  # log_every inherits 50 from default.yaml — at bs=64 / ~1 step/s
+  # that's a tick about every 50 s, which is what the rich-live
+  # dashboard expects to feel "alive".
+
+scheduler:
+  total_steps: 80000
+  warmup_steps: 1500
+
+losses: !preset temporal_v1
