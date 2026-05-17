@@ -19,8 +19,6 @@ def test_vivid_preset_keeps_chroma_anchor():
     assert "chroma_lab" in names
 
 
-def test_full_preset_includes_chroma_lab():
-    from restora_models.config import expand_loss_preset
-    losses = expand_loss_preset("full")
-    names = [l.name for l in losses]
-    assert "chroma_lab" in names
+# The legacy `full` preset (which added a GAN loss on top of standard) was
+# removed in Phase 10 along with the discriminator. A new old-film preset
+# will land in Phase 11 once its loss recipe is dialled in.

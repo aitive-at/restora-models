@@ -1,47 +1,45 @@
-"""Pydantic v2 config + YAML loader with chained defaults and !preset tag."""
+"""Pydantic v2 config + YAML loader with chained defaults and !preset tag.
+
+The schema is tailored to the temporal old-film remaster design:
+
+- ``ModelConfig`` is minimal — model size is baked into ``type``
+  (e.g. ``temporal_restora_small``); only forward-compat hyperparameters
+  remain.
+- ``DataConfig`` lists video sources via ``sources: list[dict]`` (consumed
+  by ``data/builders.py``) and exposes the per-clip / film overlay knobs
+  that the trainer uses to compose its degradation pipeline.
+
+Older fields that belonged to the per-frame compound-degradation /
+adversarial-refine era have been removed. Old YAMLs / checkpoints that
+still mention them will continue to validate because pydantic v2 ignores
+unknown fields by default (except where ``extra="allow"`` is set
+explicitly).
+"""
 from __future__ import annotations
 
 import datetime as _dt
+import os
 from pathlib import Path
 from typing import Any, Literal
 
-import os
 import yaml
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, Field
 
 
 # ---------- model ----------------------------------------------------------
 
 class ModelConfig(BaseModel):
-    type: str = "nafnet"
-    size: Literal["tiny", "large"] = "large"
-    input_size: int = 256
-    # NAFNet block sizing — None means "use the size preset". `tiny` is
-    # kept in the size enum because unit tests use it for fast model
-    # construction (nf=32, ~6M params). Production always uses `large`.
-    nf: int | None = None
-    enc_depths: list[int] | None = None
-    bottle_blocks: int | None = None
-    hidden_dim: int | None = None
-    task_embed_dim: int = 128
-    # Refine head type. Three options:
-    #   "none"        - just the deterministic dual-head output
-    #   "adversarial" - AdversarialRefineHead trained with GAN (current production)
-    #   "diffusion"   - LatentDiffusionRefineHead in SD 1.5 VAE latent space
-    refine_type: Literal["none", "adversarial", "diffusion"] = "none"
-    # Legacy: implies refine_type="adversarial" when True. Coerced via
-    # model_validator below for back-compat with old configs / ckpts.
-    adversarial_refine: bool = False
-    refine_hidden_dim: int | None = None    # default 128 if None
-    refine_n_blocks: int | None = None      # default 8 if None
-    # Diffusion-head-specific (ignored when refine_type != "diffusion")
-    diffusion_t_inference: float = 0.2
+    """Model selector.
 
-    @model_validator(mode="after")
-    def _coerce_legacy_adversarial_refine(self):
-        if self.adversarial_refine and self.refine_type == "none":
-            self.refine_type = "adversarial"
-        return self
+    ``type`` keys into ``MODEL_REGISTRY`` (e.g. ``temporal_restora_small``).
+    For the temporal_restora_* family the size is encoded in the name, so
+    no further hyperparameters are needed here. ``input_size`` and
+    ``task_embed_dim`` stay for forward-compat with architectures that
+    take explicit kwargs.
+    """
+    type: str = "temporal_restora_small"
+    input_size: int = 256
+    task_embed_dim: int = 128
 
 
 # ---------- data -----------------------------------------------------------
@@ -60,49 +58,29 @@ class LoaderConfig(BaseModel):
 
 
 class DataConfig(BaseModel):
-    root: str
+    """Video data layer config.
+
+    ``sources`` is consumed by ``data.builders.build_video_window_dataset``.
+    Each entry is ``{"type": <builder_name>, ...kwargs, "weight": <float>}``.
+
+    The film / clip degradation knobs are sampled per-batch in the trainer
+    so the same composite dataset can serve both clean image-pair training
+    and old-film simulation.
+    """
+    sources: list[dict] = Field(default_factory=list)
     val_fraction: float = 0.01
     num_fixed_preview_samples: int = 2
     num_random_preview_samples: int = 1
     augment: AugmentConfig = AugmentConfig()
     loader: LoaderConfig = LoaderConfig()
-
-    @field_validator("root")
-    @classmethod
-    def _expand_root(cls, v: str) -> str:
-        """Expand ~ and $VAR in data.root so configs can be portable.
-
-        Without this, Path('~/data/laion-images') is a literal, and the
-        dataset scan finds zero files even when the directory exists.
-        """
-        return os.path.expandvars(os.path.expanduser(v))
-
-
-# ---------- compound degradations -----------------------------------------
-
-class AxisProbs(BaseModel):
-    colorize: float = 0.5
-    denoise: float = 0.5
-    sharpen: float = 0.5
-    dejpeg: float = 0.5
-    deblur: float = 0.5
-
-
-class CompoundDegradations(BaseModel):
-    """Per-axis degradation parameters. Extra fields per-axis allowed for
-    forward compatibility."""
-    model_config = {"extra": "allow"}
-    colorize: dict[str, Any] = Field(default_factory=dict)
-    denoise:  dict[str, Any] = Field(default_factory=lambda: {"sigma_range": [0.005, 0.05]})
-    sharpen:  dict[str, Any] = Field(default_factory=lambda: {"factor_choices": [2, 4, 8]})
-    dejpeg:   dict[str, Any] = Field(default_factory=lambda: {"quality_range": [20, 70]})
-    deblur:   dict[str, Any] = Field(default_factory=lambda: {"sigma_range": [1.0, 3.0], "motion_prob": 0.2})
-
-
-class CompoundConfig(BaseModel):
-    identity_prob: float = 0.05
-    axis_probs: AxisProbs = AxisProbs()
-    degradations: CompoundDegradations = CompoundDegradations()
+    # Path to the DeepRemaster noise_data.zip extraction directory.
+    # When set, film-overlay degradation is enabled with `film_overlay_prob`.
+    film_overlay_root: Path | None = None
+    film_overlay_prob: float = 0.3
+    film_color_cast_prob: float = 0.2
+    gate_weave_prob: float = 0.2
+    mpeg_transcode_prob: float = 0.1
+    gate_weave_max_shift_px: float = 2.0
 
 
 # ---------- losses ---------------------------------------------------------
@@ -135,18 +113,6 @@ _LOSS_PRESETS: dict[str, list[dict[str, Any]]] = {
         {"name": "colorfulness", "weight": 0.08, "apply_to_axes": ["colorize"]},
         {"name": "freq_l1", "weight": 0.30, "apply_to_axes": ["sharpen"]},
     ],
-    "full": [
-        {"name": "l1_rgb", "weight": 1.0},
-        {"name": "perceptual_vgg16bn", "weight": 0.5, "config": {"criterion": "l1"}},
-        {"name": "chroma_lab", "weight": 0.10, "apply_to_axes": ["colorize"]},
-        {"name": "colorfulness", "weight": 0.05, "apply_to_axes": ["colorize"]},
-        {"name": "freq_l1", "weight": 0.30, "apply_to_axes": ["sharpen"]},
-        # GAN added AFTER warmup, not from cold — observed to destabilize
-        # training when introduced at step 0. Add via curriculum or
-        # checkpoint resume; not via the standard preset.
-        {"name": "gan", "weight": 0.05, "config": {"gan_type": "hinge"},
-         "apply_to_axes": ["colorize", "sharpen"]},
-    ],
 }
 
 
@@ -159,7 +125,7 @@ def expand_loss_preset(name: str) -> list[LossConfig]:
 # ---------- optimizer / scheduler -----------------------------------------
 
 class OptimConfig(BaseModel):
-    type: Literal["AdamW", "Adam"] = "AdamW"
+    type: Literal["AdamW", "Adam", "Muon"] = "Muon"
     lr: float = 1e-4
     weight_decay: float = 0.01
     betas: tuple[float, float] = (0.9, 0.99)
@@ -183,24 +149,15 @@ class TrainConfig(BaseModel):
     compile: bool = False
     compile_mode: Literal["default", "reduce-overhead", "max-autotune"] = "default"
     ema_decay: float = 0.999
+    lr: float = 1e-4
+    weight_decay: float = 0.01
     grad_accum_steps: int = 1
     clip_grad_norm: float = 1.0
+    seed: int = 0
+    log_every: int = 50
+    save_every: int = 5000
     preview_every_s: float = 10.0
     preview_history_every: int = 50
-    ckpt_every_steps: int = 5000
-    val_every_steps: int = 5000
-    log_every_steps: int = 25
-    # GAN warmup: linearly ramp the gan loss weight from 0 to its configured
-    # value over `gan_warmup_steps` steps starting at `gan_warmup_start`.
-    # Critical for stability — adding GAN from cold has been observed to
-    # destabilize training (see 2026-05-14 iter-N experiments). 0 disables.
-    gan_warmup_start: int = 0
-    gan_warmup_steps: int = 10000
-    # If > 0, also save numbered checkpoints (iter_NNNNNN.pt) at this
-    # interval. Unlike last.pt (which is overwritten), these accumulate so
-    # you can A/B different training stages or restart from a specific
-    # step. 0 disables.
-    ckpt_history_every: int = 0
 
 
 class ExportConfig(BaseModel):
@@ -210,32 +167,9 @@ class ExportConfig(BaseModel):
     dynamic_hw: bool = False
 
 
-class VideoConfig(BaseModel):
-    """Optional video-pair training for temporal consistency.
-
-    When `enabled`, the trainer builds a VideoPairDataset over `root` and
-    on each training step draws Bernoulli(video_batch_prob): if True, the
-    batch comes from the video loader (paired frames + flow), otherwise
-    the regular image loader. Video batches populate the temporal_pair
-    loss; image batches are unchanged.
-    """
-    enabled: bool = False
-    root: str = ""
-    max_skip: int = 5
-    hflip_prob: float = 0.5
-    require_flow: bool = True
-    video_batch_prob: float = 0.25
-    batch_size: int | Literal["auto"] = 0    # 0 = match image loader bs
-    num_workers: int = 4
-
-    @field_validator("root")
-    @classmethod
-    def _expand_root(cls, v: str) -> str:
-        return os.path.expandvars(os.path.expanduser(v)) if v else v
-
-
 class RunConfig(BaseModel):
-    name: str = ""
+    name: str = "default"
+    root: Path = Path("runs/")
     output_dir: str = ""
     seed: int = 0
 
@@ -243,15 +177,12 @@ class RunConfig(BaseModel):
 class Config(BaseModel):
     run: RunConfig = RunConfig()
     model: ModelConfig = ModelConfig()
-    data: DataConfig
-    compound: CompoundConfig = CompoundConfig()
+    data: DataConfig = DataConfig()
     losses: list[LossConfig]
-    optim_g: OptimConfig = OptimConfig()
-    optim_d: OptimConfig = OptimConfig(weight_decay=0.0)
+    optim: OptimConfig = OptimConfig()
     scheduler: SchedulerConfig = SchedulerConfig()
     train: TrainConfig = TrainConfig()
     export: ExportConfig = ExportConfig()
-    video: VideoConfig = VideoConfig()
 
 
 # ---------- YAML loader ---------------------------------------------------
@@ -314,3 +245,11 @@ def load_config(path: str | Path, overrides: dict | None = None) -> Config:
         return x
 
     return Config.model_validate(walk(raw))
+
+
+# Also re-exported for any callers that still import os to expand paths
+__all__ = [
+    "AugmentConfig", "Config", "DataConfig", "ExportConfig", "LoaderConfig",
+    "LossConfig", "ModelConfig", "OptimConfig", "RunConfig", "SchedulerConfig",
+    "TrainConfig", "deep_merge", "expand_loss_preset", "load_config",
+]
