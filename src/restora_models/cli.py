@@ -241,29 +241,21 @@ def bench(
     ckpt: Path = typer.Option(..., "--ckpt", exists=True, dir_okay=False),
     iters: int = typer.Option(100, "--iters"),
 ) -> None:
-    """Benchmark inference. Implemented in Phase 16."""
-    try:
-        from restora_models.train.bench import run_bench
-    except ImportError:
-        typer.secho("bench: not implemented yet (Phase 16 pending)",
-                    fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=2)
-    typer.echo("bench: see Phase 16 implementation")
+    """Benchmark inference latency / throughput on a checkpoint."""
+    from restora_models.train.bench import run_bench
+    run_bench(ckpt=ckpt, iters=iters)
 
 
 @app.command()
 def compare(
     ckpts: list[Path] = typer.Option(..., "--ckpts"),
     n: int = typer.Option(32, "--n"),
+    data: Path = typer.Option(Path("~/data/reds").expanduser(), "--data",
+                              help="REDS root for the holdout sampler"),
 ) -> None:
-    """Compare checkpoints. Implemented in Phase 16."""
-    try:
-        from restora_models.train.evaluate import run_compare
-    except ImportError:
-        typer.secho("compare: not implemented yet (Phase 16 pending)",
-                    fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=2)
-    typer.echo("compare: see Phase 16 implementation")
+    """Compare per-axis PSNR across one or more checkpoints."""
+    from restora_models.train.evaluate import run_compare
+    run_compare(ckpts=list(ckpts), data=data, n=n)
 
 
 @app.command()
@@ -271,15 +263,13 @@ def gallery(
     ckpt: Path = typer.Option(..., "--ckpt", exists=True, dir_okay=False),
     data: Path = typer.Option(..., "--data", exists=True, file_okay=False),
     out: Path = typer.Option(..., "--out", "-o"),
+    n: int = typer.Option(16, "--n"),
+    axis: str = typer.Option("colorize", "--axis",
+                             help="Restoration axis to visualize"),
 ) -> None:
-    """Generate qualitative gallery. Implemented in Phase 16."""
-    try:
-        from restora_models.train.gallery import run_gallery
-    except ImportError:
-        typer.secho("gallery: not implemented yet (Phase 16 pending)",
-                    fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=2)
-    typer.echo("gallery: see Phase 16 implementation")
+    """Generate qualitative triptych gallery (clean | degraded | restored)."""
+    from restora_models.train.gallery import run_gallery
+    run_gallery(ckpt=ckpt, data=data, out=out, n=n, axis=axis)
 
 
 if __name__ == "__main__":
