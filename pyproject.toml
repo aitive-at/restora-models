@@ -1,7 +1,7 @@
 [project]
 name = "restora-models"
 version = "0.1.0"
-description = "Multi-task image restoration: colorization, SR, denoise, deblur, JPEG"
+description = "Multi-task video restoration: temporal model with colorize / denoise / sharpen / dejpeg / deblur, optimized for old-film remastering"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -24,8 +24,10 @@ dependencies = [
   # LAION dataset download
   "img2dataset>=1.45",
   "huggingface_hub>=0.24",
-  # Latent diffusion refine head — uses the SD 1.5 VAE (frozen) via diffusers
-  "diffusers>=0.30",
+  # Backbone optimizer (Muon for backbone params, AdamW for norms/bias)
+  "muon-optimizer>=0.1.0",
+  # Perceptual loss for distillation + decoded RGB supervision
+  "lpips>=0.1.4",
   # PNNX export (ncnn-compatible format; mobile / edge deployment)
   "pnnx>=20260409",
 ]
@@ -35,7 +37,6 @@ dev = ["pytest>=8", "pytest-cov", "ruff>=0.6"]
 
 [project.scripts]
 restora = "restora_models.cli:app"
-restora-models = "restora_models.cli:app"
 
 [build-system]
 requires = ["hatchling"]
