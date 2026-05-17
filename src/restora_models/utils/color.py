@@ -11,21 +11,29 @@ Graph-friendly mode
 The four piecewise color functions (_srgb_to_linear, _linear_to_srgb,
 _f_lab, _f_lab_inv) use `torch.where(condition, low, high)` to express
 the piecewise branches. This is exact and bit-perfect, but it produces
-`torch.where`, `torch.le`, and `torch.gt` ops in the exported pnnx
-graph. Stock ncnn doesn't have those ops in its layer registry.
+`torch.where`, `torch.le`, and `torch.gt` ops in the exported pnnx /
+ncnn graph. Stock ncnn doesn't have those ops in its layer registry.
 
-When `graph_friendly_color()` is active (typically via the PNNX export
-wrapper), the four functions switch to a smooth-blend formulation that
-uses only `BinaryOp` (sub, mul, add) and `Clip` (clamp) — all stock
+When `graph_friendly_color()` is active (typically via the PNNX / ONNX
+export wrapper), the four functions switch to a smooth-blend formulation
+that uses only `BinaryOp` (sub, mul, add) and `Clip` (clamp) — all stock
 ncnn ops. The numerical deviation is <0.001 within a ±0.0005 band
 around each threshold and zero outside that band, because the
 piecewise functions are continuous at their thresholds.
+
+Additionally, the 3x3 RGB↔XYZ matmul switches from `torch.einsum` to
+`F.conv2d` with a (3,3,1,1) weight under the same context. Einsum is
+supported by ORT CUDA EP and TensorRT (8.5+), but isn't always fused
+into a single GPU kernel — TRT in particular sometimes leaves it as
+a generic shuffle+matmul. The 1×1 Conv form is the canonical fusable
+pattern for both EPs and folds into adjacent ops cleanly.
 """
 from __future__ import annotations
 
 from contextlib import contextmanager
 
 import torch
+from torch.nn import functional as F
 
 _USE_GRAPH_FRIENDLY = False
 
@@ -113,6 +121,21 @@ def _f_lab_inv(t: torch.Tensor) -> torch.Tensor:
     return torch.where(t > delta, high, low)
 
 
+def _matmul3(m: torch.Tensor, x: torch.Tensor) -> torch.Tensor:
+    """Per-pixel 3x3 matmul over the channel dim of (B, 3, H, W).
+
+    Under `graph_friendly_color()` uses conv2d so the export emits a
+    single Conv node (cleanly fusable by ORT CUDA EP and TensorRT).
+    Outside that context, uses einsum — equivalent math, but stays
+    out of the autograd / dispatch path used during training where
+    the eager einsum has slightly lower launch overhead in some
+    PyTorch builds.
+    """
+    if _USE_GRAPH_FRIENDLY:
+        return F.conv2d(x, m.view(3, 3, 1, 1))
+    return torch.einsum("ij,bjhw->bihw", m, x)
+
+
 def rgb_to_lab(rgb: torch.Tensor) -> torch.Tensor:
     """rgb: (B, 3, H, W) in [0, 1] sRGB → (B, 3, H, W) LAB."""
     if rgb.dim() != 4 or rgb.shape[1] != 3:
@@ -121,7 +144,7 @@ def rgb_to_lab(rgb: torch.Tensor) -> torch.Tensor:
     w = _WHITE.to(rgb.device, dtype=rgb.dtype)
 
     lin = _srgb_to_linear(rgb)
-    xyz = torch.einsum("ij,bjhw->bihw", m, lin) / w.view(1, 3, 1, 1)
+    xyz = _matmul3(m, lin) / w.view(1, 3, 1, 1)
     f = _f_lab(xyz)
     L = 116.0 * f[:, 1:2] - 16.0
     a = 500.0 * (f[:, 0:1] - f[:, 1:2])
@@ -141,7 +164,7 @@ def lab_to_rgb(lab: torch.Tensor) -> torch.Tensor:
     fx = a / 500.0 + fy
     fz = fy - b / 200.0
     xyz = torch.cat([_f_lab_inv(fx), _f_lab_inv(fy), _f_lab_inv(fz)], dim=1) * w.view(1, 3, 1, 1)
-    lin = torch.einsum("ij,bjhw->bihw", m, xyz)
+    lin = _matmul3(m, xyz)
     return _linear_to_srgb(lin)
 
 

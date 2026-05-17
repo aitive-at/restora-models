@@ -7,7 +7,7 @@ Expects a directory layout like:
     ...
     <root>/<video_name>/.flow/<frame_NNNNN>_to_+k.npz   <- precomputed flow
 
-The flow files are produced by `scripts/precompute_flow.py` (RAFT-based)
+The flow files are produced by `restora precompute-flow` (RAFT-based)
 before training. At training time the dataset:
 1. Samples a video at random
 2. Picks a starting frame at random

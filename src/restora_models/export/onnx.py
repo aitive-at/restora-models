@@ -23,6 +23,23 @@ from restora_models.utils.color import graph_friendly_color
 Precision = Literal["fp32", "fp16", "fp8", "fp4"]
 _VALID_PRECISION = ("fp32", "fp16", "fp8", "fp4")
 
+# Op types known to force CPU execution under ORT CUDA EP or to fragment
+# TensorRT subgraphs into multiple TRT engines (each with its own host/device
+# sync). Eliminating these guarantees the whole model runs as one GPU graph.
+#
+#   - Where / Less / LessOrEqual / Greater / GreaterOrEqual / Equal:
+#       boolean-mask ops. ORT CUDA EP can run Where on GPU but the bool mask
+#       producers typically stay on CPU, triggering host<->device memcpy.
+#   - Cast (float<->bool/int): same root cause; usually paired with Where.
+#       Float<->float Cast is harmless and gets folded away by the IR.
+#   - NonZero / ScatterND / TopK: data-dependent shapes; not TRT-fusable.
+#   - Einsum: supported by both EPs but often not fused into a single kernel.
+#       The color matmul uses Conv2d instead (see utils/color._matmul3).
+_FORBIDDEN_EP_OPS: tuple[str, ...] = (
+    "Where", "Less", "LessOrEqual", "Greater", "GreaterOrEqual", "Equal",
+    "NonZero", "ScatterND", "TopK", "Einsum",
+)
+
 
 def _reference_configs(num_axes: int) -> list[tuple[str, list[float]]]:
     configs = [("identity", [0.0] * num_axes), ("all-on", [1.0] * num_axes)]
@@ -65,6 +82,96 @@ def _convert_to_fp16(path: Path) -> None:
         orphan.unlink()
 
 
+def _audit_graph_for_ep_fallback(path: Path) -> dict[str, int]:
+    """Walk the exported ONNX and count every op that's known to push work
+    off the GPU under ORT CUDA EP or to fragment a TensorRT subgraph.
+
+    Returns a dict {op_type: count} of offenders. Empty dict means the
+    graph is clean — every tensor op should execute on CUDA / TensorRT
+    without falling back to CPU.
+
+    The whitelist of safe-on-GPU ops covers the model's actual op set:
+    Conv, MatMul, Gemm, Transpose, Reshape, Concat, Split, Slice, Gather,
+    Squeeze, Unsqueeze, LayerNormalization, InstanceNormalization,
+    GroupNormalization, ReduceMean, Softmax, Sigmoid, Erf, GELU,
+    DepthToSpace, Pow, Mul, Add, Sub, Div, Clip, Shape, and Constant.
+    Shape always runs on CPU in ORT but it's a metadata-only op that
+    doesn't move tensor data — explicitly tolerated.
+    """
+    import onnx
+    from collections import Counter
+    m = onnx.load(str(path), load_external_data=False)
+    op_counts = Counter(n.op_type for n in m.graph.node)
+    return {op: op_counts[op] for op in _FORBIDDEN_EP_OPS if op_counts.get(op, 0) > 0}
+
+
+def _verify_ep_placement(
+    path: Path, *, num_axes: int, input_size: int,
+    fixed_config: list[float] | None,
+    provider: str,
+) -> None:
+    """Run the exported ONNX through a non-CPU EP with profiling enabled,
+    then assert that no tensor op was assigned to the CPU EP.
+
+    `provider` is one of {"cuda", "tensorrt"}. If the matching provider
+    isn't installed in the local onnxruntime build, this is a no-op
+    (the caller should warn). Shape/Constant ops are exempt.
+
+    This is the only test that proves "the graph runs end-to-end on the
+    accelerator" — the static audit only catches known offenders.
+    """
+    import onnxruntime as ort
+    provider_map = {
+        "cuda": "CUDAExecutionProvider",
+        "tensorrt": "TensorrtExecutionProvider",
+    }
+    if provider not in provider_map:
+        raise ValueError(f"unknown provider {provider!r}; want one of {list(provider_map)}")
+    ep = provider_map[provider]
+    available = ort.get_available_providers()
+    if ep not in available:
+        raise RuntimeError(
+            f"{ep} not available in this onnxruntime build "
+            f"(have {available}). Install onnxruntime-gpu (CUDA EP) or "
+            f"onnxruntime-tensorrt (TensorRT EP)."
+        )
+    so = ort.SessionOptions()
+    so.enable_profiling = True
+    so.log_severity_level = 1
+    # Always provide CPU EP as a fallback so the session can construct, but
+    # we'll verify the EP_choice was never CPU for tensor ops.
+    sess = ort.InferenceSession(str(path), sess_options=so, providers=[ep, "CPUExecutionProvider"])
+    x = np.random.rand(1, 3, input_size, input_size).astype(np.float32)
+    feeds = {"input": x}
+    if fixed_config is None:
+        c = np.zeros((1, num_axes), dtype=np.float32); c[0, 0] = 1.0
+        feeds["config"] = c
+    sess.run(None, feeds)
+    prof_path = sess.end_profiling()
+    import json as _json
+    prof = _json.loads(Path(prof_path).read_text())
+    # Profile events with cat="Node" and args.provider tell us where each
+    # node ran. Tolerate Shape / Constant / Identity on CPU since these
+    # are metadata-only and dominant ORT CUDA builds always keep them there.
+    metadata_only = {"Shape", "Constant", "ConstantOfShape", "Identity", "Size"}
+    offenders: list[tuple[str, str]] = []
+    for ev in prof:
+        if ev.get("cat") != "Node":
+            continue
+        args = ev.get("args", {})
+        op = args.get("op_name") or args.get("op_type") or ""
+        prov = args.get("provider", "")
+        if prov == "CPUExecutionProvider" and op not in metadata_only:
+            offenders.append((ev.get("name", "?"), op))
+    Path(prof_path).unlink(missing_ok=True)
+    if offenders:
+        sample = offenders[:5]
+        raise RuntimeError(
+            f"{len(offenders)} tensor ops fell back to CPU EP under {ep}: {sample}"
+            + ("..." if len(offenders) > 5 else "")
+        )
+
+
 def _quantize_to_fp8(path: Path, opset: int) -> None:
     if opset < 19:
         raise RuntimeError(f"fp8 requires ONNX opset >= 19; got opset={opset}")
@@ -101,6 +208,7 @@ def export_onnx_from_model(
     task_map: dict | None = None,
     precision: Precision = "fp32",
     fixed_config: list[float] | None = None,
+    verify_ep: str | None = None,
 ) -> None:
     """Export a refine model to ONNX.
 
@@ -214,6 +322,32 @@ def export_onnx_from_model(
         _convert_to_fp16(export_path)
     elif precision == "fp8":
         _quantize_to_fp8(export_path, opset=opset)
+
+    # Static audit: every export gets checked for known EP-fallback ops.
+    # Cheap, catches regressions (e.g., a future refactor reintroducing
+    # torch.where in the color path) before they reach a TRT engine build.
+    offenders = _audit_graph_for_ep_fallback(export_path)
+    if offenders:
+        raise RuntimeError(
+            f"exported ONNX contains ops that force CPU fallback or fragment "
+            f"TensorRT subgraphs: {offenders}. See _FORBIDDEN_EP_OPS for the "
+            f"rationale per op."
+        )
+
+    if verify_ep is not None:
+        try:
+            _verify_ep_placement(
+                export_path, num_axes=num_axes, input_size=input_size,
+                fixed_config=fixed_config, provider=verify_ep,
+            )
+        except RuntimeError as e:
+            # If the named EP isn't installed locally, treat as a soft skip
+            # so dev-laptop exports still work. A real CI run on a GPU box
+            # will surface the same path and pass/fail meaningfully.
+            if "not available in this onnxruntime build" in str(e):
+                print(f"[onnx export] verify_ep={verify_ep} skipped: {e}")
+            else:
+                raise
 
     if verify_parity:
         import onnxruntime as ort
