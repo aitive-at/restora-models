@@ -28,8 +28,6 @@ dependencies = [
   "muon-optimizer>=0.1.0",
   # Perceptual loss for distillation + decoded RGB supervision
   "lpips>=0.1.4",
-  # PNNX export (ncnn-compatible format; mobile / edge deployment)
-  "pnnx>=20260409",
 ]
 
 [project.optional-dependencies]
