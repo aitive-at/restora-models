@@ -109,27 +109,51 @@ def _make_config_vec(active: set[str]) -> torch.Tensor:
     return vec
 
 
-def _sample_axes(rng: random.Random, identity_prob: float = 0.05) -> set[str]:
-    """Random subset of axes with small identity_prob of no axes."""
-    if rng.random() < identity_prob:
-        return set()
-    active: set[str] = set()
-    for ax in AXES:
-        if rng.random() < 0.5:
-            active.add(ax)
-    if not active:
-        active.add(rng.choice(AXES))
-    return active
+def _sample_axes(rng: random.Random, identity_prob: float = 0.15) -> set[str]:
+    """Sample a task set with balanced single/compound/identity distribution.
 
+    Targets (per user direction): the model must handle modern footage
+    needing single restoration tasks, modern footage needing compound
+    restoration, and clean-modern footage that needs NO changes (identity).
 
-def _build_optimizer(model: nn.Module, lr: float, weight_decay: float):
-    """Single-device Muon for 2D+ matmul weights, AdamW for norms / biases.
-
-    Muon (Keller Jordan, 2025) operates only on matmul-shaped weights, so
-    norm / bias / embedding parameters are routed through an auxiliary
-    AdamW group at half the base LR. If the muon package isn't installed
-    the trainer falls back to a single AdamW group.
+    Distribution:
+      - identity_prob   (default 15%): no axes -> output must equal input
+      - 35%             single random axis
+      - 35%             2 axes  (compound light)
+      - 15%             3+ axes (compound heavy, up to all 5)
     """
+    r = rng.random()
+    if r < identity_prob:
+        return set()
+    remaining = 1.0 - identity_prob
+    # Renormalize the three buckets
+    p_single = 0.35 / remaining
+    p_two    = 0.35 / remaining
+    r2 = rng.random()
+    if r2 < p_single:
+        n = 1
+    elif r2 < p_single + p_two:
+        n = 2
+    else:
+        n = rng.randint(3, len(AXES))
+    return set(rng.sample(AXES, n))
+
+
+def _build_optimizer(model: nn.Module, lr: float, weight_decay: float,
+                     *, prefer_muon: bool = False):
+    """AdamW by default; Muon opt-in via prefer_muon=True.
+
+    Muon's Newton-Schulz update requires `view(N, -1)` on 4D conv kernels,
+    which fails when the tensor is laid out as channels_last (non-contiguous
+    strides). Until that interaction is fixed upstream, AdamW is the safe
+    default. Set ``cfg.train.optimizer = "muon"`` to opt in once stable.
+    """
+    if not prefer_muon:
+        return torch.optim.AdamW(
+            (p for p in model.parameters() if p.requires_grad),
+            lr=lr, weight_decay=weight_decay,
+        ), "adamw"
+
     try:
         from muon import SingleDeviceMuonWithAuxAdam
     except ImportError:
@@ -199,9 +223,25 @@ class Trainer:
         self.loss_set = LossSet(cfg.losses)
         self.loss_set.to(self.device)
 
-        # Optimizer (Muon by default, AdamW fallback)
+        # Optimizer (AdamW by default; Muon is opt-in via cfg.train.optimizer="muon")
+        prefer_muon = getattr(cfg.train, "optimizer", "adamw").lower() == "muon"
         self.optimizer, self.optimizer_kind = _build_optimizer(
-            self.model, cfg.train.lr, cfg.train.weight_decay)
+            self.model, cfg.train.lr, cfg.train.weight_decay,
+            prefer_muon=prefer_muon)
+
+        # LR scheduler: linear warmup + cosine decay to 1e-2 * base_lr.
+        # Using LambdaLR for full control; no extra dep.
+        import math
+        warmup_steps = max(1, int(cfg.scheduler.warmup_steps))
+        total_steps = max(warmup_steps + 1, int(cfg.scheduler.total_steps))
+        def _lr_lambda(step: int) -> float:
+            if step < warmup_steps:
+                return float(step) / float(warmup_steps)
+            # cosine to 0.01 * base
+            progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
+            progress = min(1.0, max(0.0, progress))
+            return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
+        self.scheduler = torch.optim.lr_scheduler.LambdaLR(self.optimizer, _lr_lambda)
 
         # EMA shadow (optional)
         self.ema = (ModelEMA(self.model, decay=cfg.train.ema_decay)
@@ -327,10 +367,11 @@ class Trainer:
             torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.cfg.train.clip_grad_norm)
         self.optimizer.step()
+        self.scheduler.step()
         if self.ema is not None:
             self.ema.update(self.model)
 
-        return {"loss": float(loss.detach()), **loss_log}
+        return {"loss": float(loss.detach()), "lr": self.scheduler.get_last_lr()[0], **loss_log}
 
     # ------------------------------------------------------------------
     # Main loop

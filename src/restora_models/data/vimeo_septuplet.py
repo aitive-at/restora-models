@@ -26,7 +26,7 @@ class VimeoSeptupletDataset(Dataset):
         split: Literal["train", "test"] = "train",
         crop: int = 256,
     ) -> None:
-        self.root = Path(root)
+        self.root = Path(root).expanduser()
         list_name = "sep_trainlist.txt" if split == "train" else "sep_testlist.txt"
         list_path = self.root / list_name
         if not list_path.exists():

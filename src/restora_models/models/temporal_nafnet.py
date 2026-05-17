@@ -40,10 +40,13 @@ class _SizeSpec:
 # ([4-12M] and [15-30M]) and so every bottleneck channel count is a
 # multiple of TransformerBlock's default 8 attention heads.
 _SIZES: dict[str, _SizeSpec] = {
+    # use_temporal_attn=False everywhere: MHA bottleneck traces with a fixed
+    # seq-length, breaking ONNX dynamic-spatial export. Pure-conv bottleneck
+    # keeps any-input-resolution export working (a hard requirement).
     "temporal_nafnet_nano":   _SizeSpec(nf=20, enc_depths=(1, 1, 1, 2), bottle_blocks=2, use_temporal_attn=False),
-    "temporal_nafnet_small":  _SizeSpec(nf=28, enc_depths=(2, 2, 2, 4), bottle_blocks=4, use_temporal_attn=True),
-    "temporal_nafnet_medium": _SizeSpec(nf=40, enc_depths=(2, 2, 4, 6), bottle_blocks=6, use_temporal_attn=True),
-    "temporal_nafnet_large":  _SizeSpec(nf=56, enc_depths=(2, 2, 4, 8), bottle_blocks=8, use_temporal_attn=True),
+    "temporal_nafnet_small":  _SizeSpec(nf=28, enc_depths=(2, 2, 2, 4), bottle_blocks=4, use_temporal_attn=False),
+    "temporal_nafnet_medium": _SizeSpec(nf=40, enc_depths=(2, 2, 4, 6), bottle_blocks=6, use_temporal_attn=False),
+    "temporal_nafnet_large":  _SizeSpec(nf=56, enc_depths=(2, 2, 4, 8), bottle_blocks=8, use_temporal_attn=False),
 }
 
 

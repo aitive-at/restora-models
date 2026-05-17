@@ -41,7 +41,7 @@ class REDSDataset(Dataset):
             raise ValueError(f"window must be >=1, got {window}")
         if stride < 1:
             raise ValueError(f"stride must be >=1, got {stride}")
-        self.root = Path(root)
+        self.root = Path(root).expanduser()
         self.window = window
         self.stride = stride
         self.crop = crop

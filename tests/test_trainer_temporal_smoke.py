@@ -36,7 +36,7 @@ class _FakeClipDataset(Dataset):
         }
 
 
-def _adamw_optimizer(model, lr, weight_decay):
+def _adamw_optimizer(model, lr, weight_decay, *, prefer_muon=False):
     """Plain AdamW for smoke tests — bypasses Muon's strict shape rules."""
     opt = torch.optim.AdamW(
         (p for p in model.parameters() if p.requires_grad),
