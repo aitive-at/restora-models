@@ -3,38 +3,35 @@
 Forward contract: model(frames [B,7,3,H,W], config [B,5]) -> pred [B,3,H,W]
 where pred is the restored center frame (index 3 of the 7-frame window).
 
-Composes degradations inline in `_degrade_batch` (per-frame axes +
-per-clip film/codec layers) rather than via the legacy dataset wrapper,
-because the per-clip layers (gate weave, mpeg) need the full clip.
+Degradation pipeline runs **inside DataLoader workers** via
+:class:`restora_models.data.compound_wrapper.CompoundDegradationWrapper`.
+That move was a ~6x throughput win — the legacy in-trainer
+``_degrade_batch`` was running ~250 numpy/opencv ops per step on the
+main process between forward passes, leaving the GPU ~60% idle. See
+``data/compound_wrapper.py`` if you need to inspect the actual
+degradation logic; it used to live here.
 """
 from __future__ import annotations
 
+import math
 import random
-import shutil
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 
 import torch
 from torch import nn
 from torch.utils.data import DataLoader
 
-from restora_models.data.builders import build_video_window_dataset
-from restora_models.data.compound import AXES, DEGRADE_ORDER
-from restora_models.data.degradations.film_color_cast import FilmColorCastDegradation
-from restora_models.data.degradations.film_overlay import FilmOverlayDegradation
-from restora_models.data.degradations.gate_weave import GateWeaveDegradation
-from restora_models.data.degradations.mpeg_transcode import MpegTranscodeDegradation
-from restora_models.data.degradations.registry import Degradation, build_degradation
-# Ensure each degradation module is imported so the registry is populated
-from restora_models.data.degradations import colorization as _colorization  # noqa: F401
-from restora_models.data.degradations import deblur as _deblur  # noqa: F401
-from restora_models.data.degradations import denoise as _denoise  # noqa: F401
-from restora_models.data.degradations import jpeg as _jpeg  # noqa: F401
-from restora_models.data.degradations import superres as _superres  # noqa: F401
+from restora_models.data.builders import build_compound_video_dataset
+from restora_models.data.compound import AXES
+from restora_models.data.compound_wrapper import (
+    collate_compound, compound_worker_init_fn,
+)
 from restora_models.losses import LossSet
-from restora_models.losses.metrics import psnr as psnr_per_sample
+from restora_models.losses.metrics import (
+    find_lpips_model, lpips_per_sample, psnr as psnr_per_sample,
+)
 from restora_models.losses.registry import LossContext
 from restora_models.models.registry import build_model
 from restora_models.models.temporal_align_stem import TemporalAlignStem
@@ -46,105 +43,11 @@ from .preview import (
     render_multitask_grid,
     write_png_atomic,
 )
+from .tb import TensorBoardWriter
 from .ui import TrainUI
 
 CENTER_INDEX = TemporalAlignStem.CENTER_INDEX  # 3
 NUM_FRAMES = TemporalAlignStem.NUM_FRAMES      # 7
-
-# Map task axis -> registry name for per-frame degradations.
-_AXIS_TO_REG = {
-    "colorize": "colorize",
-    "denoise":  "denoise",
-    "sharpen":  "sharpen",
-    "dejpeg":   "jpeg",
-    "deblur":   "deblur",
-}
-
-
-def _build_per_frame_degradations() -> dict[str, Degradation]:
-    """Instantiate one Degradation per axis from the registry."""
-    deg_cfg = {
-        "colorize": {},
-        "denoise":  {"sigma_range": [0.005, 0.05]},
-        "sharpen":  {"factor_choices": [2, 4, 8]},
-        "dejpeg":   {"quality_range": [20, 70]},
-        "deblur":   {"sigma_range": [1.0, 3.0], "motion_prob": 0.2},
-    }
-    return {axis: build_degradation(_AXIS_TO_REG[axis], deg_cfg[axis]) for axis in AXES}
-
-
-def _apply_per_frame_degradations(
-    clip: torch.Tensor,
-    active_axes: set[str],
-    per_frame_degs: dict[str, Degradation],
-    rng: random.Random,
-) -> torch.Tensor:
-    """Apply each active axis to every frame in the clip.
-
-    clip: (T,3,H,W) float in [0,1] on CPU. Returns same-shape degraded clip.
-    Degradations run in real-world causal order (blur -> noise -> downsample
-    -> jpeg -> grayscale).
-    """
-    if not active_axes:
-        return clip.clone()
-    out_frames = []
-    for k in range(clip.shape[0]):
-        np_img = clip[k].permute(1, 2, 0).contiguous().numpy()
-        for axis in DEGRADE_ORDER:
-            if axis in active_axes:
-                np_img = per_frame_degs[axis].degrade(np_img, rng)
-        out_frames.append(torch.from_numpy(np_img.transpose(2, 0, 1)).contiguous())
-    return torch.stack(out_frames, dim=0)
-
-
-def _apply_per_frame_single(
-    clip: torch.Tensor, deg: Degradation, rng: random.Random,
-) -> torch.Tensor:
-    """Run a single Degradation over every frame of the clip."""
-    out_frames = []
-    for k in range(clip.shape[0]):
-        np_img = clip[k].permute(1, 2, 0).contiguous().numpy()
-        np_img = deg.degrade(np_img, rng)
-        out_frames.append(torch.from_numpy(np_img.transpose(2, 0, 1)).contiguous())
-    return torch.stack(out_frames, dim=0)
-
-
-def _make_config_vec(active: set[str]) -> torch.Tensor:
-    vec = torch.zeros(len(AXES))
-    for i, ax in enumerate(AXES):
-        if ax in active:
-            vec[i] = 1.0
-    return vec
-
-
-def _sample_axes(rng: random.Random, identity_prob: float = 0.15) -> set[str]:
-    """Sample a task set with balanced single/compound/identity distribution.
-
-    Targets (per user direction): the model must handle modern footage
-    needing single restoration tasks, modern footage needing compound
-    restoration, and clean-modern footage that needs NO changes (identity).
-
-    Distribution:
-      - identity_prob   (default 15%): no axes -> output must equal input
-      - 35%             single random axis
-      - 35%             2 axes  (compound light)
-      - 15%             3+ axes (compound heavy, up to all 5)
-    """
-    r = rng.random()
-    if r < identity_prob:
-        return set()
-    remaining = 1.0 - identity_prob
-    # Renormalize the three buckets
-    p_single = 0.35 / remaining
-    p_two    = 0.35 / remaining
-    r2 = rng.random()
-    if r2 < p_single:
-        n = 1
-    elif r2 < p_single + p_two:
-        n = 2
-    else:
-        n = rng.randint(3, len(AXES))
-    return set(rng.sample(AXES, n))
 
 
 def _build_optimizer(model: nn.Module, lr: float, weight_decay: float,
@@ -188,14 +91,6 @@ def _build_optimizer(model: nn.Module, lr: float, weight_decay: float,
     return SingleDeviceMuonWithAuxAdam(param_groups), "muon"
 
 
-@dataclass
-class _BatchDegradations:
-    """Output of `_degrade_batch`: tensors + the per-sample axis labels."""
-    degraded: torch.Tensor      # (B, T, 3, H, W)
-    config: torch.Tensor        # (B, num_axes)
-    axes_active: list[str]
-
-
 class Trainer:
     """Temporal restoration trainer.
 
@@ -230,6 +125,9 @@ class Trainer:
         # Loss aggregator
         self.loss_set = LossSet(cfg.losses)
         self.loss_set.to(self.device)
+        # Reuse the LPIPS model from the loss set for per-axis LPIPS metric
+        # rather than instantiating a second VGG (saves ~500 MB).
+        self._lpips_model = find_lpips_model(self.loss_set)
 
         # Optimizer (AdamW by default; Muon is opt-in via cfg.train.optimizer="muon")
         prefer_muon = getattr(cfg.train, "optimizer", "adamw").lower() == "muon"
@@ -238,14 +136,11 @@ class Trainer:
             prefer_muon=prefer_muon)
 
         # LR scheduler: linear warmup + cosine decay to 1e-2 * base_lr.
-        # Using LambdaLR for full control; no extra dep.
-        import math
         warmup_steps = max(1, int(cfg.scheduler.warmup_steps))
         total_steps = max(warmup_steps + 1, int(cfg.scheduler.total_steps))
         def _lr_lambda(step: int) -> float:
             if step < warmup_steps:
                 return float(step) / float(warmup_steps)
-            # cosine to 0.01 * base
             progress = (step - warmup_steps) / max(1, total_steps - warmup_steps)
             progress = min(1.0, max(0.0, progress))
             return 0.01 + 0.99 * 0.5 * (1.0 + math.cos(math.pi * progress))
@@ -255,8 +150,12 @@ class Trainer:
         self.ema = (ModelEMA(self.model, decay=cfg.train.ema_decay)
                     if cfg.train.ema_decay > 0 else None)
 
-        # Composite video dataset + loader
-        self.train_ds = build_video_window_dataset(cfg.data.sources)
+        # Composite video dataset + loader. The wrapper runs the
+        # degradation pipeline inside each worker (see
+        # compound_wrapper.py), so the main process never sees raw
+        # numpy/opencv work between forward passes.
+        self.train_ds = build_compound_video_dataset(
+            cfg.data.sources, data_cfg=cfg.data, seed=cfg.train.seed)
         loader_cfg = cfg.data.loader
         bs = loader_cfg.batch_size if loader_cfg.batch_size != "auto" else 8
         self.train_loader = DataLoader(
@@ -270,35 +169,13 @@ class Trainer:
             prefetch_factor=(loader_cfg.prefetch_factor
                              if loader_cfg.num_workers > 0 else None),
             drop_last=True,
+            collate_fn=collate_compound,
+            worker_init_fn=compound_worker_init_fn,
         )
-
-        # Per-frame degradations (one Degradation per axis)
-        self.per_frame_degs = _build_per_frame_degradations()
-
-        # Film overlay (optional — needs noise_data.zip extraction)
-        self.film_overlay: FilmOverlayDegradation | None = None
-        if cfg.data.film_overlay_root is not None:
-            root = Path(cfg.data.film_overlay_root)
-            if root.exists():
-                self.film_overlay = FilmOverlayDegradation.from_dir(root)
-        self.film_overlay_prob = float(cfg.data.film_overlay_prob)
-
-        # Film color cast (per-frame, no asset dependency)
-        self.film_color_cast = FilmColorCastDegradation()
-        self.film_color_cast_prob = float(cfg.data.film_color_cast_prob)
-
-        # Per-clip degradations
-        self.gate_weave = GateWeaveDegradation(
-            max_shift_px=cfg.data.gate_weave_max_shift_px)
-        self.gate_weave_prob = float(cfg.data.gate_weave_prob)
-        self.mpeg: MpegTranscodeDegradation | None = None
-        if shutil.which("ffmpeg") is not None:
-            self.mpeg = MpegTranscodeDegradation()
-        self.mpeg_prob = float(cfg.data.mpeg_transcode_prob)
 
         self.step = 0
 
-        # ---- live UI + preview wiring ----------------------------------
+        # ---- live UI + preview + tensorboard wiring --------------------
         # Headless when stdout isn't a TTY (e.g. `nohup > log 2>&1 &`) so
         # rich doesn't try to redraw into a redirected file. The dashboard
         # downgrades to one-line stdout updates in that mode.
@@ -309,13 +186,18 @@ class Trainer:
             headless=headless,
             task_names=list(AXES),
         )
-        # Seed-shuffle a fixed set of dataset indices used for previews so
-        # the same scenes show up each iteration — easy to eyeball progress
-        # frame-over-frame.
+        self.tb = TensorBoardWriter(self.out_dir)
+
+        # Preview indices: pull a fixed set of dataset indices for the
+        # preview grid so the same scenes appear iteration-over-iteration.
+        # We pull from the underlying clean dataset (no degradation) — the
+        # preview helper applies its own deterministic per-row degradation.
+        inner_ds = getattr(self.train_ds, "inner", self.train_ds)
         n_fixed = int(cfg.data.num_fixed_preview_samples)
         n_random = int(cfg.data.num_random_preview_samples)
-        ds_len = max(1, len(self.train_ds))
+        ds_len = max(1, len(inner_ds))
         rng_prev = random.Random(cfg.train.seed)
+        self._preview_dataset = inner_ds
         self._preview_indices: list[int] = [
             i % ds_len for i in range(min(n_fixed, ds_len))
         ]
@@ -327,59 +209,19 @@ class Trainer:
         self._t_window: float = time.perf_counter()
         self._samples_window: int = 0
         self._last_per_axis_psnr: dict[str, float] = {}
-
-    # ------------------------------------------------------------------
-    # Per-batch degradation pipeline
-    # ------------------------------------------------------------------
-
-    def _degrade_batch(self, clean_clips: torch.Tensor,
-                       rng: random.Random) -> _BatchDegradations:
-        """Sample axes + apply degradations per-sample.
-
-        clean_clips: (B, T, 3, H, W) on `self.device`. The degradation
-        pipeline runs on CPU (numpy / opencv heavy) and the result is
-        moved back to the device.
-        """
-        b, t, c, h, w = clean_clips.shape
-        degraded_out = torch.empty_like(clean_clips, device="cpu")
-        config_out = torch.empty(b, len(AXES))
-        axes_active: list[str] = []
-        cpu_clips = clean_clips.detach().cpu()
-        for i in range(b):
-            clip = cpu_clips[i]
-            active = _sample_axes(rng)
-            # Per-frame degradations (the 5 standard axes)
-            clip = _apply_per_frame_degradations(clip, active,
-                                                 self.per_frame_degs, rng)
-            # Optional per-frame film overlay (real grain / dust textures)
-            if self.film_overlay is not None and rng.random() < self.film_overlay_prob:
-                clip = _apply_per_frame_single(clip, self.film_overlay, rng)
-            # Optional per-frame film color cast (sepia / cyan fade / etc.)
-            if rng.random() < self.film_color_cast_prob:
-                clip = _apply_per_frame_single(clip, self.film_color_cast, rng)
-            # Per-clip degradations (need the full clip in one shot)
-            if self.gate_weave_prob > 0 and rng.random() < self.gate_weave_prob:
-                clip = self.gate_weave.apply_clip(clip)
-            if (self.mpeg is not None
-                    and self.mpeg_prob > 0
-                    and rng.random() < self.mpeg_prob):
-                clip = self.mpeg.apply_clip(clip)
-            degraded_out[i] = clip
-            config_out[i] = _make_config_vec(active)
-            axes_active.append("+".join(sorted(active)) or "identity")
-        return _BatchDegradations(
-            degraded=degraded_out.to(clean_clips.device).to(clean_clips.dtype),
-            config=config_out.to(clean_clips.device),
-            axes_active=axes_active,
-        )
+        self._last_per_axis_lpips: dict[str, float] = {}
+        self._last_grad_norm: float = 0.0
 
     # ------------------------------------------------------------------
     # Training step
     # ------------------------------------------------------------------
 
-    def _train_step(self, batch: dict, rng: random.Random) -> dict[str, float]:
-        clean_clips = batch["frames"].to(self.device, non_blocking=True)
-        deg = self._degrade_batch(clean_clips, rng)
+    def _train_step(self, batch: dict, *,
+                    compute_metrics: bool = True) -> dict[str, float]:
+        clean_clips = batch["clean"].to(self.device, non_blocking=True)
+        degraded    = batch["degraded"].to(self.device, non_blocking=True)
+        config      = batch["config"].to(self.device, non_blocking=True)
+        axes_active = batch["axes_active"]
         target = clean_clips[:, CENTER_INDEX]
 
         amp_dtype = {"bf16": torch.bfloat16, "fp16": torch.float16,
@@ -389,40 +231,68 @@ class Trainer:
 
         with torch.amp.autocast(self.device.type, dtype=amp_dtype,
                                 enabled=autocast_enabled):
-            pred = self.model(deg.degraded, deg.config)
+            pred = self.model(degraded, config)
             ctx = LossContext(
                 pred_rgb=pred,
                 clean_rgb=target,
-                degraded_rgb=deg.degraded[:, CENTER_INDEX],
-                config=deg.config,
-                axes_active=deg.axes_active,
+                degraded_rgb=degraded[:, CENTER_INDEX],
+                config=config,
+                axes_active=axes_active,
             )
             loss, loss_log = self.loss_set(ctx)
 
         self.optimizer.zero_grad(set_to_none=True)
         loss.backward()
+        grad_norm = 0.0
         if self.cfg.train.clip_grad_norm:
-            torch.nn.utils.clip_grad_norm_(
+            # clip_grad_norm_ returns the *unclipped* total grad norm,
+            # which is the right thing to log: it shows the actual
+            # gradient magnitude the optimizer is seeing.
+            gn = torch.nn.utils.clip_grad_norm_(
                 self.model.parameters(), self.cfg.train.clip_grad_norm)
+            grad_norm = float(gn.detach()) if torch.is_tensor(gn) else float(gn)
         self.optimizer.step()
         self.scheduler.step()
         if self.ema is not None:
             self.ema.update(self.model)
+        self._last_grad_norm = grad_norm
 
-        # Per-axis PSNR for the live dashboard. Mask is taken from the
-        # per-sample config vector so each sample contributes only to the
-        # axes that were active for it (identity samples contribute to
-        # nothing here — they have their own dedicated preview row).
-        with torch.no_grad():
-            per_sample = psnr_per_sample(pred, target)
-            self._last_per_axis_psnr = {}
-            for ax_idx, axis in enumerate(AXES):
-                mask = deg.config[:, ax_idx] >= 0.5
-                if mask.any():
-                    self._last_per_axis_psnr[axis] = float(
-                        per_sample[mask].mean().item())
+        # Per-axis PSNR + LPIPS are forced CPU-sync points: even with a
+        # bulk transfer per metric, `.cpu().numpy()` flushes the CUDA
+        # stream — blocking the main process from queueing the *next*
+        # batch's forward pass until every preceding op (optimizer.step,
+        # EMA.update, LPIPS forward) finishes. The UI only consumes
+        # these every `log_every` steps, so we skip the computation
+        # entirely on non-tick steps. Stale values stay in
+        # ``_last_per_axis_*`` and the UI is none the wiser.
+        if compute_metrics:
+            with torch.no_grad():
+                psnr_b = psnr_per_sample(pred, target).detach().cpu().numpy()
+                if self._lpips_model is not None:
+                    lpips_b = (lpips_per_sample(
+                        self._lpips_model, pred, target).detach().cpu().numpy())
+                else:
+                    lpips_b = None
+                config_cpu = config.detach().cpu().numpy()
+                self._last_per_axis_psnr = {}
+                self._last_per_axis_lpips = {}
+                for ax_idx, axis in enumerate(AXES):
+                    mask = config_cpu[:, ax_idx] >= 0.5
+                    if mask.any():
+                        self._last_per_axis_psnr[axis] = float(psnr_b[mask].mean())
+                        if lpips_b is not None:
+                            self._last_per_axis_lpips[axis] = float(
+                                lpips_b[mask].mean())
 
-        return {"loss": float(loss.detach()), "lr": self.scheduler.get_last_lr()[0], **loss_log}
+        # Rename the aggregate to "total" so TB tags read `loss/total`
+        # rather than `loss/loss`. The UI's headless path already prefers
+        # "total" over "loss".
+        return {
+            "total": float(loss.detach()),
+            "lr": self.scheduler.get_last_lr()[0],
+            "grad_norm": grad_norm,
+            **loss_log,
+        }
 
     # ------------------------------------------------------------------
     # Main loop
@@ -430,7 +300,6 @@ class Trainer:
 
     def fit(self) -> Path:
         """Run the full training loop. Returns the path to final.pt."""
-        rng = random.Random(self.cfg.train.seed)
         total_steps = int(self.cfg.train.total_steps)
         log_every = int(self.cfg.train.log_every)
         save_every = int(self.cfg.train.save_every)
@@ -438,10 +307,7 @@ class Trainer:
 
         loader_iter = iter(self.train_loader)
         bs = int(self.train_loader.batch_size or 1)
-        with self.ui:
-            # Skip the initial preview burst by seeding the timer to "now"
-            # offset by the cadence — first preview lands after
-            # `preview_every_s` real-time seconds, not on step 0.
+        with self.ui, self.tb:
             self._last_preview_t = time.perf_counter()
             self._t_window = time.perf_counter()
             self._samples_window = 0
@@ -452,7 +318,12 @@ class Trainer:
                 except StopIteration:
                     loader_iter = iter(self.train_loader)
                     batch = next(loader_iter)
-                log = self._train_step(batch, rng)
+                # Predict whether the *next* step lands on a tick boundary
+                # so the trainer only computes per-axis PSNR/LPIPS (each a
+                # forced CPU sync) on the steps the UI actually consumes.
+                will_tick = (log_every > 0
+                             and (self.step + 1) % log_every == 0)
+                log = self._train_step(batch, compute_metrics=will_tick)
                 self.step += 1
                 self._samples_window += bs
 
@@ -468,6 +339,13 @@ class Trainer:
                         lr=float(log.get("lr", 0.0)),
                         throughput_imgs=imgs_per_s,
                         per_task_psnr=self._last_per_axis_psnr or None,
+                        per_task_lpips=self._last_per_axis_lpips or None,
+                        grad_norm=self._last_grad_norm,
+                    )
+                    self.tb.log_scalars(
+                        self.step,
+                        _tag_scalars(log, self._last_per_axis_psnr,
+                                     self._last_per_axis_lpips, imgs_per_s),
                     )
 
                 if (preview_every_s > 0
@@ -493,10 +371,10 @@ class Trainer:
             return final_path
 
     def _write_preview(self, *, force_history: bool = False) -> None:
-        """Render `<run>/samples/latest.png` and optionally a step-tagged
-        history snapshot. Errors are surfaced into the UI status line
-        instead of crashing the trainer — the run keeps going even if
-        previews fail (e.g. transient GPU OOM during inference)."""
+        """Render `<run>/samples/latest.png`, optionally archive a
+        step-tagged history snapshot, and mirror the same grid into
+        TensorBoard under ``preview/grid``. Errors are surfaced into the
+        UI status line — the run keeps going even if a preview fails."""
         try:
             eval_model = self.ema.module if self.ema is not None else self.model
             was_training = eval_model.training
@@ -504,7 +382,7 @@ class Trainer:
             try:
                 samples = make_temporal_preview_samples(
                     model=eval_model,
-                    dataset=self.train_ds,
+                    dataset=self._preview_dataset,
                     device=self.device,
                     sample_indices=self._preview_indices,
                     seed=self._preview_seed,
@@ -516,6 +394,7 @@ class Trainer:
             grid = render_multitask_grid(samples, caption=caption, cell_size=cell)
             latest = self.out_dir / "samples" / "latest.png"
             write_png_atomic(latest, grid)
+            self.tb.log_image(self.step, "preview/grid", grid)
             phe = int(self.cfg.train.preview_history_every)
             if phe > 0 or force_history:
                 crossed = (force_history
@@ -535,6 +414,35 @@ class Trainer:
             self.ui.note_preview(f"preview error: {exc}")
         finally:
             self._last_preview_t = time.perf_counter()
+
+
+def _tag_scalars(log: dict[str, float],
+                 per_axis_psnr: dict[str, float],
+                 per_axis_lpips: dict[str, float],
+                 imgs_per_s: float) -> dict[str, float]:
+    """Build the flat ``{tag: value}`` dict the TB writer expects.
+
+    Convention:
+      - ``loss/<name>``   — every numeric in the loss-log dict
+      - ``metric/psnr/<axis>`` and ``metric/lpips/<axis>``
+      - ``train/lr``, ``train/grad_norm``, ``train/img_per_s``
+    """
+    out: dict[str, float] = {}
+    for k, v in log.items():
+        if not isinstance(v, (int, float)):
+            continue
+        if k == "lr":
+            out["train/lr"] = float(v)
+        elif k == "grad_norm":
+            out["train/grad_norm"] = float(v)
+        else:
+            out[f"loss/{k}"] = float(v)
+    out["train/img_per_s"] = float(imgs_per_s)
+    for axis, val in (per_axis_psnr or {}).items():
+        out[f"metric/psnr/{axis}"] = float(val)
+    for axis, val in (per_axis_lpips or {}).items():
+        out[f"metric/lpips/{axis}"] = float(val)
+    return out
 
 
 # ----------------------------------------------------------------------

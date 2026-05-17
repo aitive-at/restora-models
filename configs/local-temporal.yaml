@@ -22,9 +22,17 @@ model:
 
 data:
   loader:
-    batch_size: 12
+    # Bumped from 12 -> 32 after the data-pipeline refactor moved
+    # degradation into DataLoader workers. The 27M `small` model at
+    # 256x256 bf16 only uses ~21 GB at bs=12; bs=32 lands around ~55 GB
+    # on the 96 GB Blackwell and lets the GPU spend more time compiling
+    # per step instead of idling between batches.
+    batch_size: 32
+    # 6 workers stays inside the WSL2 RAM cap (see local-hardware memory).
+    # Each worker now also runs the degradation pipeline, so keeping
+    # prefetch_factor higher gives more headroom for stragglers.
     num_workers: 6
-    prefetch_factor: 2
+    prefetch_factor: 4
   sources:
     - type: reds
       root: "~/data/reds"

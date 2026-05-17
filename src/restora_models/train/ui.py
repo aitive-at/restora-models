@@ -1,4 +1,4 @@
-"""Rich live dashboard with per-task PSNR rows."""
+"""Rich live dashboard with per-task PSNR + LPIPS rows."""
 from __future__ import annotations
 
 import time
@@ -42,8 +42,10 @@ class TrainUI(AbstractContextManager):
         self.console = Console()
         self._losses: dict[str, _EMATrack] = {}
         self._psnr: dict[str, _EMATrack] = {n: _EMATrack() for n in self.task_names}
+        self._lpips: dict[str, _EMATrack] = {n: _EMATrack() for n in self.task_names}
         self._lr = 0.0
         self._throughput = 0.0
+        self._grad_norm = 0.0
         self._step = 0
         self._last_preview = ""
         self._t0 = time.perf_counter()
@@ -79,10 +81,15 @@ class TrainUI(AbstractContextManager):
             self._live = None
 
     def tick(self, *, step: int, losses: dict[str, float], lr: float,
-             throughput_imgs: float, per_task_psnr: dict[str, float] | None = None) -> None:
+             throughput_imgs: float,
+             per_task_psnr: dict[str, float] | None = None,
+             per_task_lpips: dict[str, float] | None = None,
+             grad_norm: float | None = None) -> None:
         self._step = step
         self._lr = lr
         self._throughput = throughput_imgs
+        if grad_norm is not None:
+            self._grad_norm = float(grad_norm)
         for k, v in losses.items():
             if not isinstance(v, (int, float)):
                 continue
@@ -90,8 +97,13 @@ class TrainUI(AbstractContextManager):
             t.short.update(v); t.long.update(v)
         if per_task_psnr:
             for k, v in per_task_psnr.items():
-                if v == v:
+                if v == v:  # NaN-guard
                     track = self._psnr.setdefault(k, _EMATrack())
+                    track.short.update(v); track.long.update(v)
+        if per_task_lpips:
+            for k, v in per_task_lpips.items():
+                if v == v:
+                    track = self._lpips.setdefault(k, _EMATrack())
                     track.short.update(v); track.long.update(v)
         elapsed_s = time.perf_counter() - self._t0
         eta_s = self._eta_seconds(elapsed_s, step)
@@ -117,10 +129,10 @@ class TrainUI(AbstractContextManager):
     def _print_headless(self, *, elapsed_s: float, eta_s: float | None) -> None:
         """One-line summary printed each tick in headless mode (no TTY).
 
-        Picks the most informative scalar loss available (`total` if the
-        loss aggregator emits one, else `loss`, else `l1_rgb`) and appends
-        each tracked per-axis PSNR. Stays single-line so `nohup ... > log`
-        produces a readable progress trail.
+        Picks the most informative scalar loss available (``total`` first,
+        else ``loss``, else ``l1_rgb``) and appends each tracked per-axis
+        PSNR + LPIPS plus the latest grad_norm. Stays single-line so
+        ``nohup ... > log`` produces a readable progress trail.
         """
         eta_str = _fmt_hms(eta_s) if eta_s is not None else "--:--:--"
         bits = [
@@ -129,15 +141,23 @@ class TrainUI(AbstractContextManager):
             f"eta={eta_str}",
             f"lr={self._lr:.2e}",
             f"img/s={self._throughput:.1f}",
+            f"gn={self._grad_norm:.2f}",
         ]
         for k in ("total", "loss", "l1_rgb"):
             tr = self._losses.get(k)
             if tr is not None and tr.short.value is not None:
                 bits.append(f"{k}={tr.short.value:.4f}")
                 break
-        for axis, tr in self._psnr.items():
-            if tr.short.value is not None:
-                bits.append(f"{axis}={tr.short.value:.1f}dB")
+        for axis in self.task_names:
+            psnr_tr = self._psnr.get(axis)
+            lpips_tr = self._lpips.get(axis)
+            psnr_v = psnr_tr.short.value if psnr_tr else None
+            lpips_v = lpips_tr.short.value if lpips_tr else None
+            if psnr_v is None and lpips_v is None:
+                continue
+            psnr_str = f"{psnr_v:.1f}dB" if psnr_v is not None else "—"
+            lpips_str = f"{lpips_v:.3f}" if lpips_v is not None else "—"
+            bits.append(f"{axis}={psnr_str}/{lpips_str}")
         print(" ".join(bits), flush=True)
 
     def note_preview(self, msg: str) -> None:
@@ -152,15 +172,18 @@ class TrainUI(AbstractContextManager):
         layout.split_column(
             Layout(Panel.fit(f"run: {self.run_name}", title="restora train"), size=3),
             Layout(self._progress, size=3),
-            Layout(name="middle", size=20),
+            Layout(name="middle", size=22),
             Layout(Panel.fit(self._last_preview or "(no preview yet)", title="last preview"), size=3),
         )
-        layout["middle"].split_row(self._losses_panel(), self._psnr_panel(), self._gpu_panel())
+        layout["middle"].split_row(
+            self._losses_panel(), self._metrics_panel(), self._gpu_panel())
         return layout
 
     def _losses_panel(self) -> Panel:
         t = Table.grid(padding=(0, 1))
-        t.add_column("loss"); t.add_column("value", justify="right"); t.add_column("trend", justify="right")
+        t.add_column("loss")
+        t.add_column("value", justify="right")
+        t.add_column("trend", justify="right")
         for name, tr in self._losses.items():
             s = tr.short.value or 0.0
             l = tr.long.value or s
@@ -168,27 +191,53 @@ class TrainUI(AbstractContextManager):
             t.add_row(name, f"{s:.4f}", f"{arrow} {abs(s - l):.4f}")
         t.add_row("lr", f"{self._lr:.2e}", "")
         t.add_row("img/s", f"{self._throughput:.1f}", "")
+        t.add_row("grad_norm", f"{self._grad_norm:.3f}", "")
         return Panel(t, title="losses (EMA)")
 
-    def _psnr_panel(self) -> Panel:
+    def _metrics_panel(self) -> Panel:
+        """Per-axis metrics: PSNR (higher better) + LPIPS (lower better).
+
+        Trend arrows are direction-aware: PSNR ▲ = improving, LPIPS ▼ =
+        improving. Both use long-EMA as the reference baseline so the
+        arrow tracks "is short-EMA pulling away in the good direction?"
+        """
         t = Table.grid(padding=(0, 1))
-        t.add_column("task"); t.add_column("PSNR", justify="right"); t.add_column("trend", justify="right")
-        for name, tr in self._psnr.items():
-            s = tr.short.value
-            l = tr.long.value
-            if s is None:
-                t.add_row(name, "—", "")
-                continue
-            arrow = "▲" if s > (l or s) else "▼"
-            t.add_row(name, f"{s:.1f} dB", f"{arrow} {abs(s - (l or s)):.2f}")
-        return Panel(t, title="per-task PSNR")
+        t.add_column("task")
+        t.add_column("PSNR", justify="right")
+        t.add_column("Δ", justify="left")
+        t.add_column("LPIPS", justify="right")
+        t.add_column("Δ", justify="left")
+        for name in self.task_names:
+            psnr_tr = self._psnr.get(name)
+            lpips_tr = self._lpips.get(name)
+            psnr_s = psnr_tr.short.value if psnr_tr else None
+            psnr_l = psnr_tr.long.value if psnr_tr else None
+            lpips_s = lpips_tr.short.value if lpips_tr else None
+            lpips_l = lpips_tr.long.value if lpips_tr else None
+            if psnr_s is None:
+                psnr_str, psnr_trend = "—", ""
+            else:
+                base = psnr_l if psnr_l is not None else psnr_s
+                arrow = "▲" if psnr_s > base else "▼"
+                psnr_str = f"{psnr_s:.1f}dB"
+                psnr_trend = f"{arrow}{abs(psnr_s - base):.2f}"
+            if lpips_s is None:
+                lpips_str, lpips_trend = "—", ""
+            else:
+                base = lpips_l if lpips_l is not None else lpips_s
+                arrow = "▼" if lpips_s < base else "▲"
+                lpips_str = f"{lpips_s:.3f}"
+                lpips_trend = f"{arrow}{abs(lpips_s - base):.3f}"
+            t.add_row(name, psnr_str, psnr_trend, lpips_str, lpips_trend)
+        return Panel(t, title="per-task metrics")
 
     def _gpu_panel(self) -> Panel:
         s = gpu_stats(0)
         if s is None:
             return Panel("gpu stats unavailable", title="gpu")
         t = Table.grid(padding=(0, 1))
-        t.add_column(); t.add_column(justify="right")
+        t.add_column()
+        t.add_column(justify="right")
         t.add_row("name", s.name[:24])
         t.add_row("mem", f"{s.mem_used_gb:.1f}/{s.mem_total_gb:.1f} GB")
         t.add_row("util", f"{s.util_pct}%")

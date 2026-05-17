@@ -28,6 +28,7 @@ dependencies = [
   "muon-optimizer>=0.1.0",
   # Perceptual loss for distillation + decoded RGB supervision
   "lpips>=0.1.4",
+  "tensorboard>=2.20.0",
 ]
 
 [project.optional-dependencies]

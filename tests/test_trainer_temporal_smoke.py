@@ -1,11 +1,13 @@
 """Smoke test: trainer instantiates + steps one batch using fake data.
 
 These tests deliberately bypass the real video sources (REDS / Vimeo) by
-monkeypatching ``build_video_window_dataset`` with a tiny in-memory
-``Dataset`` that yields random 7-frame clips. They confirm:
+monkeypatching ``build_compound_video_dataset`` with a tiny in-memory
+``Dataset`` that yields the post-degradation batch schema directly
+(``{clean, degraded, config, axes_active}``). They confirm:
 
   * ``Trainer.__init__`` succeeds end-to-end (model + losses + optimizer
-    + degradation pipeline) with the new ``configs/local-temporal.yaml``.
+    + dataset + DataLoader + UI + TensorBoard writer) with the new
+    ``configs/local-temporal.yaml``.
   * On a CUDA host, one full training step runs and a checkpoint lands
     on disk.
 """
@@ -16,23 +18,38 @@ import torch
 from torch.utils.data import Dataset
 
 from restora_models.config import load_config
+from restora_models.data.compound import AXES
 from restora_models.train.trainer import Trainer
 
 
-class _FakeClipDataset(Dataset):
-    """Yields random 7-frame clips for trainer-smoke testing."""
+class _FakeCompoundDataset(Dataset):
+    """Yields the post-degradation schema the trainer now expects.
+
+    The trainer used to do degradation itself; that work is now inside
+    DataLoader workers (see compound_wrapper.py). This fake stands in
+    for the wrapper's output for smoke-test purposes — same dict keys,
+    same dtypes, synthetic content.
+    """
 
     def __init__(self, n: int = 4):
         self.n = n
+        # Expose `inner` so the trainer's preview-index logic can still
+        # call `len(...)` on something. Pointing it at self is fine.
+        self.inner = self
 
     def __len__(self) -> int:
         return self.n
 
     def __getitem__(self, idx: int) -> dict:
+        clean = torch.rand(7, 3, 32, 32)
+        degraded = (clean + 0.02 * torch.randn_like(clean)).clamp(0, 1)
+        config = torch.zeros(len(AXES))
+        config[0] = 1.0   # colorize active
         return {
-            "frames": torch.rand(7, 3, 32, 32),
-            "source": "fake",
-            "key": f"f_{idx}",
+            "clean": clean,
+            "degraded": degraded,
+            "config": config,
+            "axes_active": "colorize",
         }
 
 
@@ -49,18 +66,17 @@ def _adamw_optimizer(model, lr, weight_decay, *, prefer_muon=False):
                     reason="trainer-smoke requires CUDA")
 def test_trainer_one_step_on_fake_data(tmp_path, monkeypatch):
     cfg = load_config(Path("configs/local-temporal.yaml"))
-    # Patch the dataset builder to use the fake dataset.
+    # Patch the dataset builder to return a fake compound-schema dataset.
     import restora_models.train.trainer as trainer_mod
     monkeypatch.setattr(
-        trainer_mod, "build_video_window_dataset",
-        lambda sources: _FakeClipDataset(n=4),
+        trainer_mod, "build_compound_video_dataset",
+        lambda sources, *, data_cfg=None, seed=0: _FakeCompoundDataset(n=4),
     )
     # Bypass Muon — its conv-filter shape reshape path is fragile for
-    # some kernel shapes in this architecture (upstream behaviour). The
-    # smoke test only cares that the trainer plumbing executes one full
-    # step + saves a checkpoint, so plain AdamW is the right tool here.
+    # some kernel shapes in this architecture. The smoke test only
+    # cares that the trainer plumbing executes one full step + saves
+    # a checkpoint, so plain AdamW is the right tool here.
     monkeypatch.setattr(trainer_mod, "_build_optimizer", _adamw_optimizer)
-    # Reduce to 1 step.
     cfg.train.total_steps = 1
     cfg.train.save_every = 1
     cfg.train.log_every = 1
@@ -88,11 +104,10 @@ def test_trainer_constructs_without_cuda(tmp_path, monkeypatch):
     cfg.data.loader.persistent_workers = False
     cfg.run.root = Path(tmp_path)
     cfg.run.name = "construct_only"
-    # Skip the dataset build (real REDS not present in CI)
     import restora_models.train.trainer as trainer_mod
     monkeypatch.setattr(
-        trainer_mod, "build_video_window_dataset",
-        lambda sources: _FakeClipDataset(n=4),
+        trainer_mod, "build_compound_video_dataset",
+        lambda sources, *, data_cfg=None, seed=0: _FakeCompoundDataset(n=4),
     )
 
     trainer = Trainer(cfg, device=torch.device("cpu"))

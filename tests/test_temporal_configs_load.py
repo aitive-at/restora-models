@@ -22,7 +22,9 @@ def test_local_temporal_production_targets():
     cfg = load_config(Path("configs/local-temporal.yaml"))
     assert cfg.train.total_steps == 100000
     assert cfg.train.compile is True
-    assert cfg.data.loader.batch_size == 12
+    # bs bumped to 32 after the data-pipeline refactor; ~55 GB on a 96 GB
+    # Blackwell. See `configs/local-temporal.yaml` for the rationale.
+    assert cfg.data.loader.batch_size == 32
 
 
 def test_temporal_v1_preset_has_expected_losses():

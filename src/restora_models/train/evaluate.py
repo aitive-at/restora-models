@@ -12,7 +12,10 @@ from restora_models.config import ModelConfig
 from restora_models.data.compound import AXES
 from restora_models.data.reds import REDSDataset
 from restora_models.models.registry import build_model
-from restora_models.train.trainer import _apply_per_frame_degradations, _build_per_frame_degradations
+from restora_models.data.compound_wrapper import (
+    _apply_per_frame_degradations,
+    _build_per_frame_degradations,
+)
 
 
 def _eval_ckpt_psnr(ckpt: Path, *, holdout, device: torch.device, per_frame_degs: dict) -> dict[str, float]:

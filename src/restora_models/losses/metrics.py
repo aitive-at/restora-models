@@ -1,7 +1,10 @@
-"""Per-sample PSNR / SSIM (no grad)."""
+"""Per-sample PSNR / SSIM / LPIPS metrics (no grad)."""
 from __future__ import annotations
 
+from typing import Optional
+
 import torch
+import torch.nn as nn
 import torch.nn.functional as F
 
 
@@ -10,6 +13,36 @@ def psnr(pred: torch.Tensor, clean: torch.Tensor, max_val: float = 1.0) -> torch
     mse = (pred.float() - clean.float()).pow(2).flatten(1).mean(dim=1)
     eps = 1e-10
     return 10.0 * torch.log10(max_val**2 / (mse + eps))
+
+
+@torch.no_grad()
+def lpips_per_sample(model: nn.Module, pred: torch.Tensor,
+                     clean: torch.Tensor) -> torch.Tensor:
+    """Per-sample LPIPS distance from a pre-instantiated lpips.LPIPS model.
+
+    Inputs are RGB in [0, 1]; LPIPS internally expects [-1, 1]. Lower is
+    better. Returns a 1-D tensor of length B.
+
+    Pass `model` from the existing LpipsDecodedLoss instance in the loss
+    set so we don't load the ~500 MB VGG weights twice — see
+    ``find_lpips_model`` for the lookup helper.
+    """
+    pred_n = pred * 2.0 - 1.0
+    target_n = clean * 2.0 - 1.0
+    return model(pred_n, target_n).view(-1)
+
+
+def find_lpips_model(loss_set) -> Optional[nn.Module]:
+    """Return the inner lpips.LPIPS model from a LossSet, or None.
+
+    Used by the trainer to compute a per-axis LPIPS metric without
+    duplicating the VGG-based feature extractor that's already in memory
+    for the lpips_decoded loss.
+    """
+    for _, loss, _ in getattr(loss_set, "entries", []):
+        if getattr(loss, "name", None) == "lpips_decoded":
+            return loss.model
+    return None
 
 
 def _gaussian_kernel(size: int = 11, sigma: float = 1.5) -> torch.Tensor:
