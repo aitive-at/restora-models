@@ -32,6 +32,21 @@ class _EMATrack:
     long: EMA = field(default_factory=lambda: EMA(alpha=0.01))
 
 
+class _LiveLayoutFactory:
+    """Re-render the dashboard on every ``rich.live.Live`` refresh tick
+    (default 6 Hz), not just when ``ui.tick()`` fires. Live calls
+    ``__rich_console__`` once per refresh; routing it back through
+    ``ui.render()`` lets the elapsed/ETA timer and the GPU panel advance
+    in real time even when ``log_every`` ticks are minutes apart at
+    large batch sizes."""
+
+    def __init__(self, ui: "TrainUI") -> None:
+        self._ui = ui
+
+    def __rich_console__(self, console, options):  # noqa: D401 - rich proto
+        yield self._ui.render()
+
+
 class TrainUI(AbstractContextManager):
     def __init__(self, *, run_name: str, total_steps: int, headless: bool = False,
                  task_names: list[str] | None = None) -> None:
@@ -71,7 +86,11 @@ class TrainUI(AbstractContextManager):
 
     def __enter__(self) -> "TrainUI":
         if not self.headless:
-            self._live = Live(self.render(), refresh_per_second=6, console=self.console)
+            # Pass a factory (not a static Layout) so each 6 Hz refresh
+            # rebuilds the Layout — keeps elapsed/ETA/GPU panel live
+            # between log_every ticks.
+            self._live = Live(_LiveLayoutFactory(self),
+                              refresh_per_second=6, console=self.console)
             self._live.__enter__()
         return self
 
@@ -105,16 +124,13 @@ class TrainUI(AbstractContextManager):
                 if v == v:
                     track = self._lpips.setdefault(k, _EMATrack())
                     track.short.update(v); track.long.update(v)
-        elapsed_s = time.perf_counter() - self._t0
-        eta_s = self._eta_seconds(elapsed_s, step)
-        self._progress.update(
-            self._task_id, completed=step,
-            elapsed_str=_fmt_hms(elapsed_s),
-            eta_str=_fmt_hms(eta_s) if eta_s is not None else "--:--:--",
-        )
-        if self._live:
-            self._live.update(self.render())
-        elif self.headless:
+        # In Live mode the 6 Hz refresh thread re-renders via
+        # _LiveLayoutFactory → render(), which recomputes elapsed/ETA
+        # and re-reads pynvml on every frame. We only need an explicit
+        # headless print here, since headless has no refresh loop.
+        if self.headless:
+            elapsed_s = time.perf_counter() - self._t0
+            eta_s = self._eta_seconds(elapsed_s, step)
             self._print_headless(elapsed_s=elapsed_s, eta_s=eta_s)
 
     def _eta_seconds(self, elapsed_s: float, step: int) -> float | None:
@@ -162,12 +178,22 @@ class TrainUI(AbstractContextManager):
 
     def note_preview(self, msg: str) -> None:
         self._last_preview = msg
-        if self._live:
-            self._live.update(self.render())
-        elif self.headless:
+        # Live picks up the new text on the next refresh; only headless
+        # needs an explicit print.
+        if self.headless:
             print(f"[preview] {msg}", flush=True)
 
     def render(self) -> Layout:
+        # Refresh the wall-clock timer on every call. Live invokes this
+        # at refresh_per_second Hz, so elapsed/ETA tick smoothly even
+        # while we wait minutes between log_every ticks.
+        elapsed_s = time.perf_counter() - self._t0
+        eta_s = self._eta_seconds(elapsed_s, self._step)
+        self._progress.update(
+            self._task_id, completed=self._step,
+            elapsed_str=_fmt_hms(elapsed_s),
+            eta_str=_fmt_hms(eta_s) if eta_s is not None else "--:--:--",
+        )
         layout = Layout()
         layout.split_column(
             Layout(Panel.fit(f"run: {self.run_name}", title="restora train"), size=3),

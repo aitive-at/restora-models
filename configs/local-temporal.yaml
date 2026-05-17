@@ -31,12 +31,12 @@ data:
     # 6 workers stays inside the WSL2 RAM cap (see local-hardware memory).
     # Each worker now also runs the degradation pipeline, so keeping
     # prefetch_factor higher gives more headroom for stragglers.
-    num_workers: 6
+    num_workers: 12
     prefetch_factor: 4
   sources:
     - type: reds
       root: "~/data/reds"
-      split: "train_sharp"        # tried first; falls back to flat layout if missing
+      split: "train_sharp" # tried first; falls back to flat layout if missing
       window: 7
       stride: 1
       crop: 256
@@ -55,7 +55,9 @@ train:
   memory_format: channels_last
   lr: 2.0e-4
   weight_decay: 0.01
-  log_every: 100
+  # log_every inherits 50 from default.yaml. At bs=32 / ~0.8 steps/s that
+  # gives a tick roughly every 60s — the rich-live dashboard repaints
+  # elapsed/GPU at 6 Hz, but the loss/metric cells only refresh on tick.
   save_every: 5000
 
 scheduler:
