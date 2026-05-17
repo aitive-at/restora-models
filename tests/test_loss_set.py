@@ -45,12 +45,6 @@ def test_apply_to_axes_any_semantics():
     assert torch.isfinite(total)
 
 
-def test_has_gan_detected():
-    ls_yes = LossSet([LossConfig(name="gan", weight=1.0, config={"gan_type": "hinge"})])
-    ls_no = LossSet([LossConfig(name="l1_rgb", weight=1.0)])
-    assert ls_yes.has_gan and not ls_no.has_gan
-
-
 def test_apply_to_axes_preserves_video_fields():
     """When apply_to_axes filters samples, the sub-context must keep
     secondary_pred_rgb / flow_t_to_secondary so temporal_pair can still

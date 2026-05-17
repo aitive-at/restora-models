@@ -15,17 +15,12 @@ class LossContext:
     degraded_rgb: torch.Tensor      # (B, 3, H, W)
     config: torch.Tensor            # (B, 5) float — restoration axes
     axes_active: list[str]          # length B; per-sample label like "color+denoise"
-    discriminator: nn.Module | None = None
     # Optional fields for the temporal-pair loss on video batches.
     # When both are present, TemporalPairLoss fires (L1 between
     # flow-warped `pred_rgb` and `secondary_pred_rgb`); when either is
     # missing, the loss returns 0 (image-only batches).
     secondary_pred_rgb: torch.Tensor | None = None    # (B, 3, H, W) — model output on frame t+k
     flow_t_to_secondary: torch.Tensor | None = None   # (B, 2, H, W) — pixel-displacement flow t -> t+k
-    # Diffusion-head intermediates. Trainer populates these when
-    # cfg.model.refine_type == "diffusion"; absent otherwise.
-    pred_latent: torch.Tensor | None = None
-    target_latent: torch.Tensor | None = None
 
 
 class RestorationLoss(nn.Module):
