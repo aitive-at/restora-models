@@ -34,12 +34,36 @@ app.add_typer(prepare_app, name="prepare-data")
 @prepare_app.command("film-overlays")
 def prepare_film_overlays(
     output_dir: Path = typer.Option(..., "--out", "-o",
-                                     help="Where to extract the DeepRemaster noise_data.zip"),
+                                     help="Where to drop the film-overlay PNGs"),
     keep_zip: bool = typer.Option(False, "--keep-zip", help="Don't delete the downloaded zip"),
+    synthetic_only: bool = typer.Option(
+        False, "--synthetic-only",
+        help="Skip the upstream fetch and synthesize PNGs directly. "
+             "Use when the DeepRemaster host is unreachable."),
+    n_synthetic: int = typer.Option(
+        600, "--n-synthetic", help="How many synthetic PNGs to generate "
+        "(default 600 — ~50 MB)"),
 ) -> None:
-    """Download + extract DeepRemaster's noise_data.zip (898 MB, ~6152 textures)."""
-    from restora_models.cli_prepare import download_film_overlays
-    download_film_overlays(output_dir, keep_zip=keep_zip)
+    """Populate a directory with film-overlay textures.
+
+    Tries to download the DeepRemaster noise_data.zip (898 MB, ~6152 real
+    grain/dust/scratch PNGs from scanned film). If the source URL is
+    unreachable — and as of mid-2026 it permanently is — falls back to
+    locally-synthesized textures matching the same format. Pass
+    ``--synthetic-only`` to skip the upstream attempt entirely.
+    """
+    from restora_models.cli_prepare import (
+        download_film_overlays, synthesize_film_overlays,
+    )
+    if synthetic_only:
+        typer.echo(f"synthesizing {n_synthetic} film-overlay textures to "
+                   f"{output_dir} (skipping upstream fetch)")
+        synthesize_film_overlays(output_dir, n=n_synthetic, seed=0)
+        n = sum(1 for _ in Path(output_dir).expanduser().rglob("*.png"))
+        typer.secho(f"done: {n} PNGs at {output_dir}", fg=typer.colors.GREEN)
+    else:
+        download_film_overlays(output_dir, keep_zip=keep_zip,
+                                n_synthetic=n_synthetic)
 
 
 @prepare_app.command("reds")

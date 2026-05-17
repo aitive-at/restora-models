@@ -30,9 +30,12 @@ impossible because workers now sample independently. That is acceptable
 """
 from __future__ import annotations
 
+import logging
 import random
 import shutil
 from pathlib import Path
+
+_logger = logging.getLogger(__name__)
 from typing import Any
 
 import torch
@@ -192,9 +195,20 @@ class CompoundDegradationWrapper(Dataset):
         # Optional film overlay — needs a real on-disk asset dir.
         self.film_overlay: FilmOverlayDegradation | None = None
         if overlay_root is not None:
-            root = Path(overlay_root)
-            if root.exists():
+            root = Path(overlay_root).expanduser()
+            if root.exists() and any(root.rglob("*.png")):
                 self.film_overlay = FilmOverlayDegradation.from_dir(root)
+            else:
+                # Loud-but-not-fatal: the trainer keeps running with the
+                # synthetic axes only, but we want this state to be
+                # obvious in the logs rather than silently dropped.
+                _logger.warning(
+                    "film_overlay_root=%s but no PNG textures found "
+                    "there; film_overlay degradation will be SKIPPED. "
+                    "Run `restora prepare-data film-overlays --out %s` "
+                    "to populate (download or synthesize).",
+                    overlay_root, overlay_root,
+                )
 
         # Film color cast: per-frame, no asset dependency.
         self.film_color_cast = FilmColorCastDegradation()
