@@ -163,3 +163,35 @@ class TemporalNAFNet(nn.Module):
 
 for _name in _SIZES:
     register_model(_name)(TemporalNAFNet)
+
+
+from restora_models.models.rsd_refine import RSDRefineHead
+
+
+_REFINE_WIDTHS = {"nano": 0, "small": 64, "medium": 96, "large": 128}
+
+
+class TemporalRestora(nn.Module):
+    """Backbone + RSD refine in a single module exposing (frames, config) contract.
+
+    For the `nano` size the refine head is skipped (width=0); the model is
+    pure backbone for fastest student deployments.
+    """
+
+    def __init__(self, cfg: ModelConfig, num_axes: int = 5):
+        super().__init__()
+        backbone_type = cfg.type.replace("temporal_restora", "temporal_nafnet")
+        size_key = backbone_type.rsplit("_", 1)[-1]
+        self.backbone = TemporalNAFNet(ModelConfig(type=backbone_type), num_axes=num_axes)
+        rw = _REFINE_WIDTHS[size_key]
+        self.refine = RSDRefineHead(width=rw, num_axes=num_axes) if rw > 0 else None
+
+    def forward(self, frames: torch.Tensor, config: torch.Tensor) -> torch.Tensor:
+        coarse = self.backbone(frames, config)
+        if self.refine is None:
+            return coarse
+        return self.refine(coarse, config)
+
+
+for _size in ("nano", "small", "medium", "large"):
+    register_model(f"temporal_restora_{_size}")(TemporalRestora)
