@@ -20,10 +20,10 @@ def test_local_temporal_config_loads():
 
 def test_local_temporal_production_targets():
     cfg = load_config(Path("configs/local-temporal.yaml"))
-    assert cfg.train.total_steps == 100000
+    # 60k @ bs=32 sees ~1.9 M samples in ~18 h on the Blackwell, vs the
+    # old 100k @ bs=12 which saw ~1.2 M in ~16 h. See the config comment.
+    assert cfg.train.total_steps == 60000
     assert cfg.train.compile is True
-    # bs bumped to 32 after the data-pipeline refactor; ~55 GB on a 96 GB
-    # Blackwell. See `configs/local-temporal.yaml` for the rationale.
     assert cfg.data.loader.batch_size == 32
 
 

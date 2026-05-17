@@ -44,7 +44,11 @@ data:
   film_overlay_root: "~/data/film-overlays"
 
 train:
-  total_steps: 100000
+  # 60k @ bs=32 ≈ 18 h on the local Blackwell at ~27 img/s. Sees ~1.9 M
+  # samples vs the old 100k @ bs=12 = 1.2 M samples, in roughly the same
+  # wall-clock. Drop to 100k only if quality plateaus before convergence
+  # (track per-axis PSNR/LPIPS in TensorBoard — `<run>/tb/`).
+  total_steps: 60000
   amp: bf16
   compile: true
   compile_mode: default
@@ -55,7 +59,7 @@ train:
   save_every: 5000
 
 scheduler:
-  total_steps: 100000
+  total_steps: 60000
   warmup_steps: 1000
 
 losses: !preset temporal_v1
