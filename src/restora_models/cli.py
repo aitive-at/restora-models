@@ -156,14 +156,25 @@ def infer(
     dejpeg: bool = typer.Option(False, "--dejpeg/--no-dejpeg"),
     deblur: bool = typer.Option(False, "--deblur/--no-deblur"),
 ) -> None:
-    """Run inference on a single image or a directory. Implemented in Phase 15."""
-    try:
-        from restora_models.infer.pipeline import VideoPipeline
-    except ImportError:
-        typer.secho("infer: not implemented yet (Phase 15 pending)",
-                    fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=2)
-    typer.echo("infer: see Phase 15 implementation")
+    """Run inference on a single image or a directory."""
+    import cv2
+    import torch
+    from restora_models.infer.pipeline import VideoPipeline
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    pipe = VideoPipeline.from_checkpoint(model, device=device)
+    config = {"colorize": color, "denoise": denoise, "sharpen": sharp,
+              "dejpeg": dejpeg, "deblur": deblur}
+    if input_.is_file():
+        output.parent.mkdir(parents=True, exist_ok=True)
+        img = cv2.imread(str(input_))
+        if img is None:
+            raise typer.BadParameter(f"could not read {input_}")
+        cv2.imwrite(str(output), pipe.process_image(img, config=config))
+    else:
+        output.mkdir(parents=True, exist_ok=True)
+        pipe.process_directory(input_, output, config=config)
+    typer.echo(f"wrote {output}")
 
 
 @app.command()
