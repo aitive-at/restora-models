@@ -61,8 +61,11 @@ train:
   seed: 0
   log_every: 50
   save_every: 5000
-  preview_every_s: 10.0
-  preview_history_every: 50
+  # Refresh runs/<name>/samples/latest.png every 60s wall-clock — keeps
+  # the preview pipeline from eating into training throughput.
+  preview_every_s: 60.0
+  # Archive runs/<name>/samples/iter_NNNNNNN.png every 1000 steps.
+  preview_history_every: 1000
 
 export:
   on_finish: true

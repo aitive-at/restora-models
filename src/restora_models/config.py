@@ -175,8 +175,14 @@ class TrainConfig(BaseModel):
     seed: int = 0
     log_every: int = 50
     save_every: int = 5000
-    preview_every_s: float = 10.0
-    preview_history_every: int = 50
+    # Real-time cadence for refreshing `<run>/samples/latest.png` — too
+    # short and preview I/O steals from training; 60 s is comfortable on
+    # the local Blackwell.
+    preview_every_s: float = 60.0
+    # Step-based cadence for archiving `<run>/samples/iter_NNNNNNN.png`
+    # snapshots. Defaults to 1000 to match "preview every 1000 steps or so"
+    # without flooding `samples/` on multi-hour runs.
+    preview_history_every: int = 1000
 
 
 class ExportConfig(BaseModel):

@@ -9,11 +9,21 @@ from rich.console import Console
 from rich.layout import Layout
 from rich.live import Live
 from rich.panel import Panel
-from rich.progress import BarColumn, Progress, TextColumn, TimeRemainingColumn
+from rich.progress import BarColumn, Progress, TextColumn
 from rich.table import Table
 
 from restora_models.utils.gpu import gpu_stats
 from restora_models.utils.timing import EMA
+
+
+def _fmt_hms(seconds: float) -> str:
+    """`H:MM:SS` for a non-negative second count. Used for both elapsed
+    and ETA displays — we keep hours unpadded so `12:34:56` and `1:23:45`
+    both read naturally."""
+    s = max(0, int(round(seconds)))
+    h, rem = divmod(s, 3600)
+    m, s = divmod(rem, 60)
+    return f"{h:d}:{m:02d}:{s:02d}"
 
 
 @dataclass
@@ -38,15 +48,24 @@ class TrainUI(AbstractContextManager):
         self._last_preview = ""
         self._t0 = time.perf_counter()
         self._live: Live | None = None
+        # We compute elapsed / ETA ourselves rather than relying on rich's
+        # TimeRemainingColumn — that one needs a rolling window of >=3
+        # Progress.update() samples to estimate speed, but we only tick
+        # every `log_every` steps so it stays blank for the first few
+        # minutes of every run.
         self._progress = Progress(
             TextColumn("step {task.completed}/{task.total}"),
             BarColumn(),
             TextColumn("{task.percentage:>5.1f}%"),
-            TimeRemainingColumn(),
+            TextColumn("•"),
+            TextColumn("[bold]{task.fields[elapsed_str]}[/bold] elapsed"),
+            TextColumn("•"),
+            TextColumn("[bold]{task.fields[eta_str]}[/bold] ETA"),
             console=self.console,
             transient=False,
         )
-        self._task_id = self._progress.add_task("train", total=total_steps)
+        self._task_id = self._progress.add_task(
+            "train", total=total_steps, elapsed_str="0:00:00", eta_str="--:--:--")
 
     def __enter__(self) -> "TrainUI":
         if not self.headless:
@@ -65,6 +84,8 @@ class TrainUI(AbstractContextManager):
         self._lr = lr
         self._throughput = throughput_imgs
         for k, v in losses.items():
+            if not isinstance(v, (int, float)):
+                continue
             t = self._losses.setdefault(k, _EMATrack())
             t.short.update(v); t.long.update(v)
         if per_task_psnr:
@@ -72,14 +93,59 @@ class TrainUI(AbstractContextManager):
                 if v == v:
                     track = self._psnr.setdefault(k, _EMATrack())
                     track.short.update(v); track.long.update(v)
-        self._progress.update(self._task_id, completed=step)
+        elapsed_s = time.perf_counter() - self._t0
+        eta_s = self._eta_seconds(elapsed_s, step)
+        self._progress.update(
+            self._task_id, completed=step,
+            elapsed_str=_fmt_hms(elapsed_s),
+            eta_str=_fmt_hms(eta_s) if eta_s is not None else "--:--:--",
+        )
         if self._live:
             self._live.update(self.render())
+        elif self.headless:
+            self._print_headless(elapsed_s=elapsed_s, eta_s=eta_s)
+
+    def _eta_seconds(self, elapsed_s: float, step: int) -> float | None:
+        # Wall-clock projection from total-average step rate. This biases
+        # the estimate upward early on (compile warmup eats the first
+        # tick) but self-corrects within a few minutes — and it never
+        # goes blank, which is the whole point.
+        if step <= 0 or self.total_steps <= 0 or step >= self.total_steps:
+            return None
+        return elapsed_s * (self.total_steps - step) / step
+
+    def _print_headless(self, *, elapsed_s: float, eta_s: float | None) -> None:
+        """One-line summary printed each tick in headless mode (no TTY).
+
+        Picks the most informative scalar loss available (`total` if the
+        loss aggregator emits one, else `loss`, else `l1_rgb`) and appends
+        each tracked per-axis PSNR. Stays single-line so `nohup ... > log`
+        produces a readable progress trail.
+        """
+        eta_str = _fmt_hms(eta_s) if eta_s is not None else "--:--:--"
+        bits = [
+            f"step={self._step}/{self.total_steps}",
+            f"elapsed={_fmt_hms(elapsed_s)}",
+            f"eta={eta_str}",
+            f"lr={self._lr:.2e}",
+            f"img/s={self._throughput:.1f}",
+        ]
+        for k in ("total", "loss", "l1_rgb"):
+            tr = self._losses.get(k)
+            if tr is not None and tr.short.value is not None:
+                bits.append(f"{k}={tr.short.value:.4f}")
+                break
+        for axis, tr in self._psnr.items():
+            if tr.short.value is not None:
+                bits.append(f"{axis}={tr.short.value:.1f}dB")
+        print(" ".join(bits), flush=True)
 
     def note_preview(self, msg: str) -> None:
         self._last_preview = msg
         if self._live:
             self._live.update(self.render())
+        elif self.headless:
+            print(f"[preview] {msg}", flush=True)
 
     def render(self) -> Layout:
         layout = Layout()

@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import random
 import shutil
+import sys
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -33,12 +34,19 @@ from restora_models.data.degradations import denoise as _denoise  # noqa: F401
 from restora_models.data.degradations import jpeg as _jpeg  # noqa: F401
 from restora_models.data.degradations import superres as _superres  # noqa: F401
 from restora_models.losses import LossSet
+from restora_models.losses.metrics import psnr as psnr_per_sample
 from restora_models.losses.registry import LossContext
 from restora_models.models.registry import build_model
 from restora_models.models.temporal_align_stem import TemporalAlignStem
 
 from .checkpoint import save_checkpoint
 from .ema import ModelEMA
+from .preview import (
+    make_temporal_preview_samples,
+    render_multitask_grid,
+    write_png_atomic,
+)
+from .ui import TrainUI
 
 CENTER_INDEX = TemporalAlignStem.CENTER_INDEX  # 3
 NUM_FRAMES = TemporalAlignStem.NUM_FRAMES      # 7
@@ -290,6 +298,36 @@ class Trainer:
 
         self.step = 0
 
+        # ---- live UI + preview wiring ----------------------------------
+        # Headless when stdout isn't a TTY (e.g. `nohup > log 2>&1 &`) so
+        # rich doesn't try to redraw into a redirected file. The dashboard
+        # downgrades to one-line stdout updates in that mode.
+        headless = not sys.stdout.isatty()
+        self.ui = TrainUI(
+            run_name=cfg.run.name or "run",
+            total_steps=int(cfg.train.total_steps),
+            headless=headless,
+            task_names=list(AXES),
+        )
+        # Seed-shuffle a fixed set of dataset indices used for previews so
+        # the same scenes show up each iteration — easy to eyeball progress
+        # frame-over-frame.
+        n_fixed = int(cfg.data.num_fixed_preview_samples)
+        n_random = int(cfg.data.num_random_preview_samples)
+        ds_len = max(1, len(self.train_ds))
+        rng_prev = random.Random(cfg.train.seed)
+        self._preview_indices: list[int] = [
+            i % ds_len for i in range(min(n_fixed, ds_len))
+        ]
+        for _ in range(n_random):
+            self._preview_indices.append(rng_prev.randrange(ds_len))
+        self._preview_seed = int(cfg.train.seed)
+        self._last_preview_t: float = 0.0
+        self._last_preview_step: int = -1
+        self._t_window: float = time.perf_counter()
+        self._samples_window: int = 0
+        self._last_per_axis_psnr: dict[str, float] = {}
+
     # ------------------------------------------------------------------
     # Per-batch degradation pipeline
     # ------------------------------------------------------------------
@@ -371,6 +409,19 @@ class Trainer:
         if self.ema is not None:
             self.ema.update(self.model)
 
+        # Per-axis PSNR for the live dashboard. Mask is taken from the
+        # per-sample config vector so each sample contributes only to the
+        # axes that were active for it (identity samples contribute to
+        # nothing here — they have their own dedicated preview row).
+        with torch.no_grad():
+            per_sample = psnr_per_sample(pred, target)
+            self._last_per_axis_psnr = {}
+            for ax_idx, axis in enumerate(AXES):
+                mask = deg.config[:, ax_idx] >= 0.5
+                if mask.any():
+                    self._last_per_axis_psnr[axis] = float(
+                        per_sample[mask].mean().item())
+
         return {"loss": float(loss.detach()), "lr": self.scheduler.get_last_lr()[0], **loss_log}
 
     # ------------------------------------------------------------------
@@ -383,36 +434,107 @@ class Trainer:
         total_steps = int(self.cfg.train.total_steps)
         log_every = int(self.cfg.train.log_every)
         save_every = int(self.cfg.train.save_every)
+        preview_every_s = float(self.cfg.train.preview_every_s)
 
         loader_iter = iter(self.train_loader)
-        start = time.time()
-        while self.step < total_steps:
-            try:
-                batch = next(loader_iter)
-            except StopIteration:
-                loader_iter = iter(self.train_loader)
-                batch = next(loader_iter)
-            log = self._train_step(batch, rng)
-            self.step += 1
+        bs = int(self.train_loader.batch_size or 1)
+        with self.ui:
+            # Skip the initial preview burst by seeding the timer to "now"
+            # offset by the cadence — first preview lands after
+            # `preview_every_s` real-time seconds, not on step 0.
+            self._last_preview_t = time.perf_counter()
+            self._t_window = time.perf_counter()
+            self._samples_window = 0
 
-            if log_every > 0 and self.step % log_every == 0:
-                elapsed = time.time() - start
-                print(f"step={self.step} loss={log['loss']:.4f} "
-                      f"elapsed={elapsed:.1f}s", flush=True)
+            while self.step < total_steps:
+                try:
+                    batch = next(loader_iter)
+                except StopIteration:
+                    loader_iter = iter(self.train_loader)
+                    batch = next(loader_iter)
+                log = self._train_step(batch, rng)
+                self.step += 1
+                self._samples_window += bs
 
-            if save_every > 0 and self.step % save_every == 0:
-                ck_path = self.out_dir / f"iter_{self.step:07d}.pt"
-                save_checkpoint(ck_path, model=self.model,
-                                optimizer=self.optimizer, ema=self.ema,
-                                step=self.step,
-                                extra={"cfg": self.cfg.model_dump(mode="json")})
-
-        final_path = self.out_dir / "final.pt"
-        save_checkpoint(final_path, model=self.model,
-                        optimizer=self.optimizer, ema=self.ema,
+                if log_every > 0 and self.step % log_every == 0:
+                    now = time.perf_counter()
+                    dt = max(1e-6, now - self._t_window)
+                    imgs_per_s = self._samples_window / dt
+                    self._t_window = now
+                    self._samples_window = 0
+                    self.ui.tick(
                         step=self.step,
-                        extra={"cfg": self.cfg.model_dump(mode="json")})
-        return final_path
+                        losses=log,
+                        lr=float(log.get("lr", 0.0)),
+                        throughput_imgs=imgs_per_s,
+                        per_task_psnr=self._last_per_axis_psnr or None,
+                    )
+
+                if (preview_every_s > 0
+                        and time.perf_counter() - self._last_preview_t
+                        >= preview_every_s):
+                    self._write_preview()
+
+                if save_every > 0 and self.step % save_every == 0:
+                    ck_path = self.out_dir / f"iter_{self.step:07d}.pt"
+                    save_checkpoint(ck_path, model=self.model,
+                                    optimizer=self.optimizer, ema=self.ema,
+                                    step=self.step,
+                                    extra={"cfg": self.cfg.model_dump(mode="json")})
+
+            # Final checkpoint + one closing preview so the gallery has the
+            # post-final-step state without waiting for the cadence timer.
+            final_path = self.out_dir / "final.pt"
+            save_checkpoint(final_path, model=self.model,
+                            optimizer=self.optimizer, ema=self.ema,
+                            step=self.step,
+                            extra={"cfg": self.cfg.model_dump(mode="json")})
+            self._write_preview(force_history=True)
+            return final_path
+
+    def _write_preview(self, *, force_history: bool = False) -> None:
+        """Render `<run>/samples/latest.png` and optionally a step-tagged
+        history snapshot. Errors are surfaced into the UI status line
+        instead of crashing the trainer — the run keeps going even if
+        previews fail (e.g. transient GPU OOM during inference)."""
+        try:
+            eval_model = self.ema.module if self.ema is not None else self.model
+            was_training = eval_model.training
+            eval_model.train(False)
+            try:
+                samples = make_temporal_preview_samples(
+                    model=eval_model,
+                    dataset=self.train_ds,
+                    device=self.device,
+                    sample_indices=self._preview_indices,
+                    seed=self._preview_seed,
+                )
+            finally:
+                eval_model.train(was_training)
+            caption = f"step {self.step}  ts {time.strftime('%H:%M:%S')}"
+            cell = int(getattr(self.cfg.model, "input_size", 256) or 256)
+            grid = render_multitask_grid(samples, caption=caption, cell_size=cell)
+            latest = self.out_dir / "samples" / "latest.png"
+            write_png_atomic(latest, grid)
+            phe = int(self.cfg.train.preview_history_every)
+            if phe > 0 or force_history:
+                crossed = (force_history
+                           or self._last_preview_step < 0
+                           or (self.step // max(1, phe))
+                           > (max(0, self._last_preview_step) // max(1, phe)))
+                if crossed:
+                    hist = self.out_dir / "samples" / f"iter_{self.step:07d}.png"
+                    write_png_atomic(hist, grid)
+            self._last_preview_step = self.step
+            try:
+                rel = latest.relative_to(self.out_dir)
+            except ValueError:
+                rel = latest
+            self.ui.note_preview(f"wrote {rel} @ step {self.step}")
+        except Exception as exc:
+            self.ui.note_preview(f"preview error: {exc}")
+        finally:
+            self._last_preview_t = time.perf_counter()
 
 
 # ----------------------------------------------------------------------
