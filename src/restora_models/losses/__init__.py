@@ -8,6 +8,7 @@ from restora_models.config import LossConfig
 from . import chroma as _chroma  # noqa: F401
 from . import colorfulness as _colorfulness  # noqa: F401
 from . import freq as _freq  # noqa: F401
+from . import lpips_decoded as _lpips_decoded  # noqa: F401
 from . import perceptual as _perceptual  # noqa: F401
 from . import pixel as _pixel  # noqa: F401
 from . import temporal as _temporal  # noqa: F401
