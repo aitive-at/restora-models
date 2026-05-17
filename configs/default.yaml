@@ -1,15 +1,18 @@
+# Base config inherited by all run configs. Smoke values; real configs override.
+
 run:
-  name: "${date:%Y-%m-%d_%H-%M-%S}"
-  output_dir: "runs/${date:%Y-%m-%d_%H-%M-%S}"
+  name: "default"
+  root: "runs/"
+  output_dir: ""
   seed: 0
 
 model:
-  type: nafnet
-  size: tiny
+  type: "temporal_restora_small"
   input_size: 256
   task_embed_dim: 128
 
 data:
+  sources: []   # MUST be overridden by per-environment configs
   val_fraction: 0.01
   num_fixed_preview_samples: 2
   num_random_preview_samples: 1
@@ -17,46 +20,31 @@ data:
     hflip: true
     rotate90: false
   loader:
-    batch_size: 32
-    num_workers: 16
+    batch_size: 4
+    num_workers: 4
     pin_memory: true
     persistent_workers: true
-    prefetch_factor: 4
+    prefetch_factor: 2
+  # Old-film degradation knobs (override null roots in per-env configs)
+  film_overlay_root: null
+  film_overlay_prob: 0.3
+  film_color_cast_prob: 0.2
+  gate_weave_prob: 0.2
+  mpeg_transcode_prob: 0.1
+  gate_weave_max_shift_px: 2.0
 
-compound:
-  identity_prob: 0.05
-  axis_probs:
-    colorize: 0.50
-    denoise:  0.50
-    sharpen:  0.50
-    dejpeg:   0.50
-    deblur:   0.50
-  degradations:
-    colorize: {}
-    denoise:  { sigma_range: [0.005, 0.05] }
-    sharpen:  { factor_choices: [2, 4, 8] }
-    dejpeg:   { quality_range: [20, 70] }
-    deblur:   { sigma_range: [1.0, 3.0], motion_prob: 0.2 }
+losses: !preset temporal_v1
 
-losses: !preset standard
-
-optim_g:
+optim:
   type: AdamW
-  lr: 1.0e-4
+  lr: 1.0e-3
   weight_decay: 0.01
-  betas: [0.9, 0.99]
-  fused: true
-
-optim_d:
-  type: AdamW
-  lr: 1.0e-4
-  weight_decay: 0.0
-  betas: [0.9, 0.99]
+  betas: [0.9, 0.95]
   fused: true
 
 scheduler:
   type: cosine
-  warmup_steps: 2000
+  warmup_steps: 1000
   total_steps: 100000
 
 train:
@@ -66,13 +54,15 @@ train:
   compile: false
   compile_mode: default
   ema_decay: 0.999
+  lr: 1.0e-3
+  weight_decay: 0.01
   grad_accum_steps: 1
   clip_grad_norm: 1.0
+  seed: 0
+  log_every: 50
+  save_every: 5000
   preview_every_s: 10.0
   preview_history_every: 50
-  ckpt_every_steps: 5000
-  val_every_steps: 5000
-  log_every_steps: 25
 
 export:
   on_finish: true

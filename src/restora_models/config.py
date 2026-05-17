@@ -113,6 +113,21 @@ _LOSS_PRESETS: dict[str, list[dict[str, Any]]] = {
         {"name": "colorfulness", "weight": 0.08, "apply_to_axes": ["colorize"]},
         {"name": "freq_l1", "weight": 0.30, "apply_to_axes": ["sharpen"]},
     ],
+    # Temporal old-film remaster recipe (Phase 11). Pairs the per-frame
+    # spatial losses (l1_rgb / freq_l1 / chroma_lab / colorfulness) with
+    # the new temporal losses introduced in Phase 8 (lpips_decoded for a
+    # smoother perceptual signal than VGG, temporal_pair to penalise
+    # frame-to-frame jitter, central_flicker to suppress single-frame
+    # luminance pops in the predicted center frame).
+    "temporal_v1": [
+        {"name": "l1_rgb", "weight": 1.0},
+        {"name": "lpips_decoded", "weight": 0.4},
+        {"name": "chroma_lab", "weight": 0.2, "apply_to_axes": ["colorize"]},
+        {"name": "colorfulness", "weight": 0.1, "apply_to_axes": ["colorize"]},
+        {"name": "freq_l1", "weight": 0.4, "apply_to_axes": ["sharpen"]},
+        {"name": "temporal_pair", "weight": 0.5},
+        {"name": "central_flicker", "weight": 0.3},
+    ],
 }
 
 
