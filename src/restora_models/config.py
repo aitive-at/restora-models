@@ -122,8 +122,12 @@ _LOSS_PRESETS: dict[str, list[dict[str, Any]]] = {
     "temporal_v1": [
         {"name": "l1_rgb", "weight": 1.0},
         {"name": "lpips_decoded", "weight": 0.4},
-        {"name": "chroma_lab", "weight": 0.2, "apply_to_axes": ["colorize"]},
-        {"name": "colorfulness", "weight": 0.1, "apply_to_axes": ["colorize"]},
+        # chroma + colorfulness bumped from 0.2/0.1 -> 0.5/0.3 after the
+        # 2026-05-17 E2E validation showed colorize regressing under L1+LPIPS
+        # pressure. The dual head's ab_abs path needs stronger supervision
+        # to converge on the hardest ill-posed task.
+        {"name": "chroma_lab", "weight": 0.5, "apply_to_axes": ["colorize"]},
+        {"name": "colorfulness", "weight": 0.3, "apply_to_axes": ["colorize"]},
         {"name": "freq_l1", "weight": 0.4, "apply_to_axes": ["sharpen"]},
         {"name": "temporal_pair", "weight": 0.5},
         {"name": "central_flicker", "weight": 0.3},
