@@ -172,17 +172,41 @@ def export(
     output: Path = typer.Option(..., "--output", "--out"),
     input_size: int = typer.Option(256, "--input-size"),
     precision: str = typer.Option("fp16", "--precision"),
-    task: Optional[str] = typer.Option(None, "--task"),
+    task: Optional[str] = typer.Option(
+        None, "--task",
+        help="Bake a single-task config: colorize/denoise/sharpen/dejpeg/deblur/all"),
     dynamic_hw: bool = typer.Option(True, "--dynamic-hw/--fixed-hw"),
+    opset: int = typer.Option(17, "--opset"),
+    simplify: bool = typer.Option(True, "--simplify/--no-simplify"),
+    verify_ep: Optional[str] = typer.Option(None, "--verify-ep"),
 ) -> None:
-    """Export a checkpoint to ONNX. Implemented in Phase 13."""
-    try:
-        from restora_models.export.onnx import export_onnx_from_model
-    except ImportError:
-        typer.secho("export: not implemented yet (Phase 13 pending)",
-                    fg=typer.colors.YELLOW, err=True)
-        raise typer.Exit(code=2)
-    typer.echo("export: see Phase 13 implementation")
+    """Export a checkpoint to ONNX."""
+    import torch
+    from restora_models.config import ModelConfig
+    from restora_models.export.onnx import export_onnx_from_model, TASK_CONFIGS
+    from restora_models.models.registry import build_model
+
+    if task is not None and task not in TASK_CONFIGS:
+        raise typer.BadParameter(f"--task must be in {sorted(TASK_CONFIGS)}")
+
+    payload = torch.load(str(model), map_location="cpu", weights_only=False)
+    # Try to recover model config from sidecar 'cfg'; fall back to default
+    cfg_dict = (payload.get("extra") or {}).get("cfg", {})
+    mtype = (cfg_dict.get("model") or {}).get("type", "temporal_restora_small")
+    mcfg = ModelConfig(type=mtype)
+    m = build_model(mcfg, num_axes=5)
+    m.load_state_dict(payload["model"])
+
+    fixed_config = TASK_CONFIGS[task] if task is not None else None
+    task_map = {"task": task} if task is not None else None
+
+    out_path = export_onnx_from_model(
+        m, num_axes=5, input_size=input_size, export_path=output,
+        opset=opset, simplify=simplify, dynamic_hw=dynamic_hw,
+        task_map=task_map, precision=precision, fixed_config=fixed_config,
+        verify_ep=verify_ep,
+    )
+    typer.echo(f"wrote {out_path} ({precision}, {'baked='+task if task else 'generic'})")
 
 
 @app.command()
