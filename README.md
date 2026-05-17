@@ -47,8 +47,8 @@ uv run restora prepare-data reds --out ~/data/reds
 uv run restora prepare-data film-overlays --out ~/data/film-overlays
 
 # 3. Train (on RTX PRO 6000 Blackwell, 96GB VRAM)
-uv run restora train --config configs/local-smoke.yaml     # ~30 min smoke (5k steps)
-uv run restora train --config configs/local-temporal.yaml  # ~12-15 h production (100k steps)
+uv run restora train --config configs/local-temporal.yaml                       # full run, ~12-15h
+uv run restora train --config configs/local-temporal.yaml --total-steps 5000    # quick iteration, ~30 min
 
 # 4. Export to ONNX (dynamic spatial dims; runs at any input resolution)
 uv run restora export --model runs/<run>/final.pt \

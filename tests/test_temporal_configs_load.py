@@ -18,11 +18,11 @@ def test_local_temporal_config_loads():
     assert cfg.data.sources[0]["type"] == "reds"
 
 
-def test_local_smoke_config_loads():
-    cfg = load_config(Path("configs/local-smoke.yaml"))
-    assert cfg.run.name == "local_smoke"
-    assert cfg.train.total_steps == 5000
-    assert cfg.train.compile is False
+def test_local_temporal_production_targets():
+    cfg = load_config(Path("configs/local-temporal.yaml"))
+    assert cfg.train.total_steps == 100000
+    assert cfg.train.compile is True
+    assert cfg.data.loader.batch_size == 12
 
 
 def test_temporal_v1_preset_has_expected_losses():

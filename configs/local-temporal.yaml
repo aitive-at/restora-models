@@ -1,5 +1,7 @@
 # RTX PRO 6000 Blackwell (96GB VRAM, 45GB system RAM in WSL2)
-# Production target: ~12-15 hours for 100k steps with temporal_restora_small.
+# This is THE training config. ~12-15 hours for 100k steps with
+# temporal_restora_small. For quick iteration runs, override with
+# `--total-steps 5000` on the CLI (no need for a separate smoke config).
 #
 # Tuned per E2E validation (2026-05-17):
 #  - lr 2e-4 (1e-3 diverged under LPIPS pressure)
