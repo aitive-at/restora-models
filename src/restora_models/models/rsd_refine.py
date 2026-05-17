@@ -68,5 +68,10 @@ class RSDRefineHead(nn.Module):
         h = self.stem(coarse_rgb)
         for blk in self.blocks:
             h = blk(h, cond)
-        residual = self.head(h)
+        # Identity gate: when config is all-zeros (no axes active), the
+        # residual collapses to zero and the refined output equals the
+        # coarse input exactly. Otherwise the model is free to predict
+        # any residual.
+        identity_gate = config.max(dim=1, keepdim=True).values.view(-1, 1, 1, 1)
+        residual = self.head(h) * identity_gate
         return (coarse_rgb + residual).clamp(0.0, 1.0)

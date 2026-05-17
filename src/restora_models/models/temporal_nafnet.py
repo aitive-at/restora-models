@@ -96,7 +96,14 @@ class _Bottleneck(nn.Module):
 
 
 class _LabDualHead(nn.Module):
-    """Outputs Lab-delta (all axes) + ab-abs (colorize-gated)."""
+    """Outputs Lab-delta (all axes) + ab-abs (colorize-gated).
+
+    Hardwires identity preservation: the delta is gated by the per-sample
+    max(config). When all axes are zero (identity request), the gate is 0,
+    delta is zeroed out, and the head returns the input center frame
+    exactly. As soon as ANY axis is active, the gate is 1 and the model
+    is free to predict any delta.
+    """
 
     def __init__(self, c: int):
         super().__init__()
@@ -107,15 +114,18 @@ class _LabDualHead(nn.Module):
         nn.init.zeros_(self.head_ab_abs.weight)
         nn.init.zeros_(self.head_ab_abs.bias)
 
-    def forward(self, feat: torch.Tensor, center_rgb: torch.Tensor, colorize_gate: torch.Tensor) -> torch.Tensor:
-        delta = self.head_lab_delta(feat)
-        ab_abs = self.head_ab_abs(feat)
+    def forward(self, feat: torch.Tensor, center_rgb: torch.Tensor,
+                colorize_gate: torch.Tensor, config: torch.Tensor) -> torch.Tensor:
+        # Identity gate: 1 when any axis active, 0 when config is all-zeros.
+        identity_gate = config.max(dim=1, keepdim=True).values.view(-1, 1, 1, 1)
+        delta = self.head_lab_delta(feat) * identity_gate
+        ab_abs_raw = self.head_ab_abs(feat) * identity_gate
         lab = rgb_to_lab(center_rgb)
         lab_new = lab + delta
-        gate = colorize_gate.view(-1, 1, 1, 1)
+        c_gate = colorize_gate.view(-1, 1, 1, 1)
         lab_new = torch.cat([
             lab_new[:, :1],
-            lab_new[:, 1:] * (1.0 - gate) + ab_abs * gate,
+            lab_new[:, 1:] * (1.0 - c_gate) + ab_abs_raw * c_gate,
         ], dim=1)
         return lab_to_rgb(lab_new).clamp(0.0, 1.0)
 
@@ -161,7 +171,7 @@ class TemporalNAFNet(nn.Module):
             x = up(x)
             x = x + skip
             x = stage(x, task)
-        return self.head(x, center, config[:, 0])
+        return self.head(x, center, config[:, 0], config)
 
 
 for _name in _SIZES:
