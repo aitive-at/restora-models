@@ -150,41 +150,78 @@ download_split() {
   # so the path becomes ${REDS_DIR}/${split}/<seq>/<frame>.png either
   # way (zip's own dirstructure or our explicit fallback).
   #
-  # Progress: REDS archives contain ~300k files and unzip is silent with
-  # -q, which makes the script look hung. We count entries up front via
-  # `unzip -Z1` (central-directory scan, ~1 s even for 30 GB zips), then
-  # pipe per-file `inflating: ...` output through awk to print one
-  # progress line every 1000 files with rate + ETA.
+  # Progress + speed: serial `unzip` on a 30 GB / 24k-file REDS zip is
+  # ~10-20 minutes and silent. We parallelize by feeding the central
+  # directory file list (`unzip -Z1`) into `xargs -P N`, where each
+  # worker opens the zip and extracts a chunk of files concurrently.
+  # PNG payloads are already compressed (zip uses STORE), so the
+  # bottleneck is per-file open/write syscall overhead — exactly the
+  # workload parallelism helps.
+  #
+  # A background watcher prints `du -sh ${REDS_DIR}` every 5 s. That
+  # sidesteps the stdio-buffering quirk that makes awk-on-unzip-pipe
+  # appear hung (glibc fully-buffers stdout when it's a pipe), and it
+  # works regardless of how many xargs workers are running.
+  local NCPU
+  NCPU=$(nproc 2>/dev/null || echo 4)
+  # Past ~8 workers I/O contention erases the gains on most filesystems.
+  [ "${NCPU}" -gt 8 ] && NCPU=8
+
   for zip in "${zip_subdir}"/*.zip; do
     [ -f "${zip}" ] || continue
-    local total zip_size
+    local total zip_size start_ts watcher_pid extract_rc=0
     total=$(unzip -Z1 "${zip}" | wc -l)
     zip_size=$(du -h "${zip}" | awk '{print $1}')
-    log "${split}: unpacking $(basename "${zip}") — ${total} entries, ${zip_size}"
-    unzip -o "${zip}" -d "${REDS_DIR}" | awk -v total="${total}" '
-      BEGIN { start = systime(); n = 0 }
-      # Only count actual file extractions, not the "Archive: ..." header
-      # or "creating: <dir>/" lines.
-      /^[[:space:]]+(inflating|extracting):/ {
-        n++
-        if (n % 1000 == 0) {
-          elapsed = systime() - start
-          if (elapsed == 0) elapsed = 1
-          rate = n / elapsed
-          eta = (total > n) ? (total - n) / rate : 0
-          printf "  [extract] %d/%d (%.1f%%) — %.0f files/s — ETA %dm%02ds\n",
-                 n, total, 100*n/total, rate, eta/60, eta%60
-          fflush()
-        }
-      }
-      END {
-        elapsed = systime() - start
-        if (elapsed == 0) elapsed = 1
-        printf "  [extract] done — %d files in %dm%02ds (%.0f files/s)\n",
-               n, elapsed/60, elapsed%60, n/elapsed
-      }
-    '
-    ok "${split}: unpacked $(basename "${zip}")"
+    log "${split}: unpacking $(basename "${zip}") — ${total} entries, ${zip_size}, ${NCPU}-way parallel"
+
+    start_ts=$(date +%s)
+    (
+      while true; do
+        sleep 5
+        local elapsed sz
+        elapsed=$(( $(date +%s) - start_ts ))
+        sz=$(du -sh "${REDS_DIR}" 2>/dev/null | awk '{print $1}')
+        printf '  [extract] %s unpacked — %dm%02ds elapsed\n' "${sz:-?}" "$((elapsed/60))" "$((elapsed%60))"
+      done
+    ) &
+    watcher_pid=$!
+
+    # Phase 1: pre-create every directory the zip will produce. Parallel
+    # unzip workers race on the lazy mkdir() and one of them loses on
+    # EEXIST — silently dropping a file. Pre-creating up front (single
+    # idempotent `mkdir -p` call with every ancestor path) eliminates
+    # the race. Awk emits every ancestor of every entry so even deeply
+    # nested zips are covered.
+    unzip -Z1 "${zip}" \
+      | awk -F/ '{
+          path = ""
+          for (i = 1; i < NF; i++) {
+            path = (i == 1) ? $1 : path "/" $i
+            print path
+          }
+        }' \
+      | sort -u \
+      | (cd "${REDS_DIR}" && xargs -d '\n' -r mkdir -p)
+
+    # Phase 2: parallel file extraction. Skip pure directory entries
+    # (those ending in `/`) — they're already created by Phase 1, and
+    # passing them to `unzip -oq` would just be wasted work.
+    unzip -Z1 "${zip}" \
+      | grep -v '/$' \
+      | xargs -P "${NCPU}" -n 200 unzip -oq "${zip}" -d "${REDS_DIR}" \
+      || extract_rc=$?
+
+    kill "${watcher_pid}" 2>/dev/null || true
+    wait "${watcher_pid}" 2>/dev/null || true
+
+    if [ "${extract_rc}" -ne 0 ]; then
+      err "${split}: extraction failed with exit code ${extract_rc}"
+      return "${extract_rc}"
+    fi
+
+    local final_elapsed
+    final_elapsed=$(( $(date +%s) - start_ts ))
+    ok "${split}: unpacked $(basename "${zip}") in $((final_elapsed/60))m$((final_elapsed%60))s"
   done
 
   # If the archives didn't contain a `${split}/` top dir but dropped
