@@ -48,24 +48,26 @@ packages = ["src/restora_models"]
 testpaths = ["tests"]
 addopts = "-ra -q"
 
-# Pin torch / torchvision to PyTorch's cu128 wheel index so installs
-# work on machines whose NVIDIA driver supports CUDA up to 12.8 (e.g.
-# our H200 target box with driver 570.211.01 / CUDA-runtime 12.8).
+# Pin torch / torchvision to PyTorch's cu130 wheel index. cu130 ships
+# CUDA 13.0 toolkit + matching nvrtc, which knows every Blackwell
+# compute capability shipped to date: sm_100 (B100/B200), sm_103
+# (B300/B300 Ultra), and sm_120 (consumer Blackwell RTX 6000 Pro).
 #
-# By default PyPI ships torch built against the latest CUDA, which
-# requires a newer driver than older machines have. The "RuntimeError:
-# NVIDIA driver too old" message is misleading — it's actually a
-# torch-cuda-runtime mismatch, not a driver issue.
+# We previously used cu128 — that worked on consumer Blackwell and on
+# B200, but B300's compute capability isn't in cu128's nvrtc dispatch
+# table, and the runtime JIT (e.g. `torch.abs(complex)` or any other
+# elementwise kernel PyTorch happens to codegen) crashes with
+# "nvrtc: error: invalid value for --gpu-architecture (-arch)".
 #
-# If your driver supports CUDA >= 12.9, you can remove this pin to
-# get the newest stack. For driver-bound CUDA <= 12.6, change cu128 ->
-# cu126 in BOTH the index URL and the source name. cu128 wheels exist
-# for torch 2.5+; for older torch use cu126 or cu124.
+# Compatibility note: cu130 wheels work with any CUDA-13.0+ driver
+# (B300/H200/B200 rentals all qualify; user's local RTX 6000 Pro box
+# also has CUDA 13.x driver). For older drivers stuck on CUDA <=12.8,
+# revert this to `pytorch-cu128` and accept that B300 won't work.
 [tool.uv.sources]
-torch = { index = "pytorch-cu128" }
-torchvision = { index = "pytorch-cu128" }
+torch = { index = "pytorch-cu130" }
+torchvision = { index = "pytorch-cu130" }
 
 [[tool.uv.index]]
-name = "pytorch-cu128"
-url = "https://download.pytorch.org/whl/cu128"
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
 explicit = true
