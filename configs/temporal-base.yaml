@@ -1,0 +1,75 @@
+# Shared cloud-rental training config. Per-hardware configs (h200,
+# b200, b300) inherit from this and override ONLY the values that
+# genuinely differ between GPUs/boxes (batch_size, num_workers,
+# run.name). Training schedule, LR, model, losses, and data sources
+# are identical so a run on any of the three GPUs converges to
+# "almost the same result" — only the per-step gradient noise differs
+# with batch size.
+#
+# Sizing principle: target ~60% VRAM steady-state utilisation. That
+# leaves enough headroom for the torch.compile graph + optimiser
+# state (which together can spike VRAM 20-30 GB beyond the model+batch
+# working set) without flirting with OOM under occasional augment
+# spikes.
+#
+# LR choice: 3e-4 linear-scaled from local's known-good 2e-4 at bs=32
+# (local 2e-4 × bs/local_bs = 2e-4 × 48/32 = 3e-4 for H200; same
+# nominal rate stays optimal at bs=64 on B200; mildly conservative at
+# bs=96 on B300 since strict linear-scale would say 6e-4 but that
+# triggered LPIPS divergence in earlier sweeps). Keeping the LR
+# constant is the trade we make to keep training reproducible across
+# rental hardware.
+#
+# Data paths assume `/workspace/data/{reds,film-overlays}` populated
+# by `scripts/prepare.sh`.
+
+defaults: default.yaml
+
+model:
+  type: "temporal_restora_small"
+
+data:
+  sources:
+    # Both REDS splits as training data. VideoWindowDataset normalises
+    # the weights to sampling probabilities; sizing them by sequence
+    # count (240 train_sharp vs 30 val_sharp = 8:1) treats both as one
+    # homogeneous pool so the model sees data in proportion to its
+    # abundance. Bump val_sharp's weight (e.g. 0.5 -> 1.0) if you want
+    # to oversample the smaller split as a regulariser.
+    - type: reds
+      root: "/workspace/data/reds"
+      split: "train_sharp"
+      window: 7
+      stride: 1
+      crop: 256
+      weight: 4.0
+    - type: reds
+      root: "/workspace/data/reds"
+      split: "val_sharp"
+      window: 7
+      stride: 1
+      crop: 256
+      weight: 0.5
+  film_overlay_root: "/workspace/data/film-overlays"
+  loader:
+    # Per-hardware overrides set batch_size + num_workers.
+    prefetch_factor: 4
+
+train:
+  total_steps: 80000
+  amp: bf16
+  compile: true
+  compile_mode: default
+  memory_format: channels_last
+  lr: 3.0e-4
+  weight_decay: 0.01
+  save_every: 5000
+
+scheduler:
+  total_steps: 80000
+  warmup_steps: 1500
+
+run:
+  root: "/workspace/runs"
+
+losses: !preset temporal_v1

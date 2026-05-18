@@ -1,0 +1,17 @@
+# H200 SXM (141 GB HBM3e VRAM, ~20 CPU cores, ~240 GB RAM).
+# Inherits everything from temporal-base.yaml; only the hardware-
+# sensitive knobs are overridden.
+
+defaults: temporal-base.yaml
+
+run:
+  name: "h200_temporal"
+
+data:
+  loader:
+    # 141 GB VRAM → bs=48 targets ~83 GB steady-state (≈60% util),
+    # leaves ~58 GB for compile graph + optimiser state.
+    # If steady-state VRAM <70% after compile warmup, bump to bs=56.
+    batch_size: 48
+    # 20 cores → 12 workers (60% of cores; degradation pipeline is CPU-bound).
+    num_workers: 12

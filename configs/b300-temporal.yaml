@@ -1,0 +1,20 @@
+# B300 SXM (Blackwell Ultra; 288 GB HBM3e VRAM, ~32 CPU cores,
+# ~360 GB RAM). Inherits everything from temporal-base.yaml; only the
+# hardware-sensitive knobs are overridden.
+
+defaults: temporal-base.yaml
+
+run:
+  name: "b300_temporal"
+
+data:
+  loader:
+    # 288 GB VRAM → bs=96 targets ~165 GB steady-state (≈57% util),
+    # leaves ~120 GB headroom. If profiling confirms steady-state is
+    # comfortably under 75%, bs=128 is the next step (~220 GB, still
+    # ~24% headroom). We hold off on that by default because the LR
+    # is locked at 3e-4 across hardware — pushing batch size further
+    # without a paired LR bump trades convergence for stability.
+    batch_size: 96
+    # 32 cores → 20 workers.
+    num_workers: 20

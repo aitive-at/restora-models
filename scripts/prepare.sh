@@ -96,12 +96,21 @@ download_split() {
   local urls="$2"
   local target_dir="${REDS_DIR}/${split}"
 
-  # Already populated? Skip the whole thing.
-  if [ -d "${target_dir}" ] && [ -n "$(ls -A "${target_dir}" 2>/dev/null)" ]; then
+  # Already populated with sequence dirs? Skip. REDS uses zero-padded
+  # 3-digit names (000..269 for train, 000..029 for val) so the presence
+  # of any `[0-9][0-9][0-9]` child directory is the canonical "done" signal.
+  # A partial / wrong-shape tree is not enough to skip.
+  if [ -d "${target_dir}" ]; then
     local n_seqs
-    n_seqs=$(find "${target_dir}" -mindepth 1 -maxdepth 1 -type d | wc -l)
-    ok "${split}: already populated (${n_seqs} sequences at ${target_dir}); skipping"
-    return 0
+    n_seqs=$(find "${target_dir}" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]' 2>/dev/null | wc -l)
+    if [ "${n_seqs}" -gt 0 ]; then
+      ok "${split}: already populated (${n_seqs} sequences at ${target_dir}); skipping"
+      return 0
+    fi
+    if [ -n "$(ls -A "${target_dir}" 2>/dev/null)" ]; then
+      warn "${split}: ${target_dir} non-empty but has no sequence dirs — clearing for re-extraction"
+      rm -rf "${target_dir:?}"/*
+    fi
   fi
 
   if [ -z "${urls// /}" ]; then
@@ -109,7 +118,6 @@ download_split() {
     return 0
   fi
 
-  mkdir -p "${target_dir}"
   local zip_subdir="${ZIP_CACHE}/${split}"
   mkdir -p "${zip_subdir}"
 
@@ -145,10 +153,14 @@ download_split() {
     esac
   done
 
-  # Unpack each archive. REDS zips usually contain a top-level
-  # `train_sharp/...` or `val_sharp/...` dir. We unzip into ${REDS_DIR}
-  # so the path becomes ${REDS_DIR}/${split}/<seq>/<frame>.png either
-  # way (zip's own dirstructure or our explicit fallback).
+  # Extract into a per-split tempdir, then lift the sequence dirs into
+  # ${target_dir}. This isolates splits from each other and handles all
+  # observed REDS-zip layouts uniformly:
+  #   1. zip has `<seq>/...`                 (flat)
+  #   2. zip has `<split>/<seq>/...`         (traditional)
+  #   3. zip has `<x>/<split>/<seq>/...`     (HF mirror — `train/train_sharp/...`)
+  # We don't care which one it is: we just find the directory whose
+  # children are the 3-digit sequence dirs and lift those children.
   #
   # Progress + speed: serial `unzip` on a 30 GB / 24k-file REDS zip is
   # ~10-20 minutes and silent. We parallelize by feeding the central
@@ -158,10 +170,14 @@ download_split() {
   # bottleneck is per-file open/write syscall overhead — exactly the
   # workload parallelism helps.
   #
-  # A background watcher prints `du -sh ${REDS_DIR}` every 5 s. That
+  # A background watcher prints `du -sh ${extract_tmp}` every 5 s. That
   # sidesteps the stdio-buffering quirk that makes awk-on-unzip-pipe
   # appear hung (glibc fully-buffers stdout when it's a pipe), and it
   # works regardless of how many xargs workers are running.
+  local extract_tmp="${zip_subdir}/_extract"
+  rm -rf "${extract_tmp}"
+  mkdir -p "${extract_tmp}"
+
   local NCPU
   NCPU=$(nproc 2>/dev/null || echo 4)
   # Past ~8 workers I/O contention erases the gains on most filesystems.
@@ -180,7 +196,7 @@ download_split() {
         sleep 5
         local elapsed sz
         elapsed=$(( $(date +%s) - start_ts ))
-        sz=$(du -sh "${REDS_DIR}" 2>/dev/null | awk '{print $1}')
+        sz=$(du -sh "${extract_tmp}" 2>/dev/null | awk '{print $1}')
         printf '  [extract] %s unpacked — %dm%02ds elapsed\n' "${sz:-?}" "$((elapsed/60))" "$((elapsed%60))"
       done
     ) &
@@ -201,14 +217,14 @@ download_split() {
           }
         }' \
       | sort -u \
-      | (cd "${REDS_DIR}" && xargs -d '\n' -r mkdir -p)
+      | (cd "${extract_tmp}" && xargs -d '\n' -r mkdir -p)
 
     # Phase 2: parallel file extraction. Skip pure directory entries
     # (those ending in `/`) — they're already created by Phase 1, and
     # passing them to `unzip -oq` would just be wasted work.
     unzip -Z1 "${zip}" \
       | grep -v '/$' \
-      | xargs -P "${NCPU}" -n 200 unzip -oq "${zip}" -d "${REDS_DIR}" \
+      | xargs -P "${NCPU}" -n 200 unzip -oq "${zip}" -d "${extract_tmp}" \
       || extract_rc=$?
 
     kill "${watcher_pid}" 2>/dev/null || true
@@ -224,15 +240,26 @@ download_split() {
     ok "${split}: unpacked $(basename "${zip}") in $((final_elapsed/60))m$((final_elapsed%60))s"
   done
 
-  # If the archives didn't contain a `${split}/` top dir but dropped
-  # sequences at REDS_DIR root, move them under ${split}/.
-  if [ ! -d "${target_dir}" ] || [ -z "$(ls -A "${target_dir}" 2>/dev/null)" ]; then
-    log "${split}: archives unpacked flat; consolidating into ${target_dir}"
-    mkdir -p "${target_dir}"
-    find "${REDS_DIR}" -mindepth 1 -maxdepth 1 -type d \
-         ! -name "${split}" ! -name "train_sharp" ! -name "val_sharp" \
-         -exec mv {} "${target_dir}/" \;
+  # Lift sequence dirs (NNN/) into ${target_dir}, no matter how deeply
+  # the zip nested them. Since extract_tmp is per-split there's no risk
+  # of finding a different split's sequences.
+  mkdir -p "${target_dir}"
+  local first_seq
+  first_seq=$(find "${extract_tmp}" -mindepth 1 -type d -name '[0-9][0-9][0-9]' 2>/dev/null | head -n1)
+  if [ -z "${first_seq}" ]; then
+    err "${split}: no sequence dirs (NNN/) found under ${extract_tmp}"
+    return 1
   fi
+  local seq_parent
+  seq_parent=$(dirname "${first_seq}")
+  local relpath="${seq_parent#"${extract_tmp}"/}"
+  [ "${relpath}" = "${seq_parent}" ] && relpath="."
+  log "${split}: lifting sequences from ${relpath} → ${target_dir}"
+  # `mv -t` lets us pass the destination once and N source args via -exec +.
+  find "${seq_parent}" -mindepth 1 -maxdepth 1 -type d -name '[0-9][0-9][0-9]' \
+    -exec mv -t "${target_dir}/" {} +
+
+  rm -rf "${extract_tmp}"
 
   local n_seqs
   n_seqs=$(find "${target_dir}" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | wc -l)
