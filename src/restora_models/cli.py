@@ -216,6 +216,11 @@ def export(
     opset: int = typer.Option(17, "--opset"),
     simplify: bool = typer.Option(True, "--simplify/--no-simplify"),
     verify_ep: Optional[str] = typer.Option(None, "--verify-ep"),
+    weights: str = typer.Option(
+        "ema", "--weights",
+        help="Which weight set to export: 'ema' (default, usually higher quality) "
+             "or 'model' (live training weights). Errors if 'ema' is requested "
+             "but the checkpoint has none."),
 ) -> None:
     """Export a checkpoint to ONNX."""
     import torch
@@ -225,6 +230,8 @@ def export(
 
     if task is not None and task not in TASK_CONFIGS:
         raise typer.BadParameter(f"--task must be in {sorted(TASK_CONFIGS)}")
+    if weights not in ("ema", "model"):
+        raise typer.BadParameter("--weights must be 'ema' or 'model'")
 
     payload = torch.load(str(model), map_location="cpu", weights_only=False)
     # Try to recover model config from sidecar 'cfg'; fall back to default
@@ -232,7 +239,16 @@ def export(
     mtype = (cfg_dict.get("model") or {}).get("type", "temporal_restora_small")
     mcfg = ModelConfig(type=mtype)
     m = build_model(mcfg, num_axes=5)
-    m.load_state_dict(payload["model"])
+    if weights == "ema":
+        ema_sd = payload.get("ema")
+        if not ema_sd:
+            raise typer.BadParameter(
+                f"--weights=ema requested but {model} has no 'ema' entry. "
+                "Pass --weights model to export the live training weights.")
+        m.load_state_dict(ema_sd)
+    else:
+        m.load_state_dict(payload["model"])
+    typer.echo(f"[export] loaded {weights} weights from {model}")
 
     fixed_config = TASK_CONFIGS[task] if task is not None else None
     task_map = {"task": task} if task is not None else None
