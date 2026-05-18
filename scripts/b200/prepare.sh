@@ -115,13 +115,20 @@ download_split() {
 
   # Download every URL into the per-split zip cache. -c resumes partial
   # files, so re-running the script after a network drop just continues.
+  # The aria2c control file (`<out>.aria2`) marks an in-progress download
+  # and is removed on completion — its absence is the canonical "done" flag.
   for url in ${urls}; do
     local fname
     fname=$(basename "${url%%\?*}")
     local out="${zip_subdir}/${fname}"
-    if [ -f "${out}" ] && [ -s "${out}" ]; then
-      log "${split}: ${fname} already in cache; skipping fetch"
+    if [ -f "${out}" ] && [ -s "${out}" ] && [ ! -f "${out}.aria2" ]; then
+      local size
+      size=$(du -h "${out}" | awk '{print $1}')
+      ok "${split}: ${fname} already complete in cache (${size}) — skipping fetch"
       continue
+    fi
+    if [ -f "${out}.aria2" ]; then
+      warn "${split}: ${fname} has a stale .aria2 control file — resuming"
     fi
     log "${split}: downloading ${fname}"
     case "${DOWNLOADER}" in
@@ -142,13 +149,42 @@ download_split() {
   # `train_sharp/...` or `val_sharp/...` dir. We unzip into ${REDS_DIR}
   # so the path becomes ${REDS_DIR}/${split}/<seq>/<frame>.png either
   # way (zip's own dirstructure or our explicit fallback).
+  #
+  # Progress: REDS archives contain ~300k files and unzip is silent with
+  # -q, which makes the script look hung. We count entries up front via
+  # `unzip -Z1` (central-directory scan, ~1 s even for 30 GB zips), then
+  # pipe per-file `inflating: ...` output through awk to print one
+  # progress line every 1000 files with rate + ETA.
   for zip in "${zip_subdir}"/*.zip; do
     [ -f "${zip}" ] || continue
-    log "${split}: unpacking $(basename "${zip}")"
-    # -o = overwrite without prompt; -q = quiet (file list is enormous).
-    # Print a one-line summary instead so the user sees progress.
-    unzip -oq "${zip}" -d "${REDS_DIR}"
-    log "${split}: unpacked $(basename "${zip}")"
+    local total zip_size
+    total=$(unzip -Z1 "${zip}" | wc -l)
+    zip_size=$(du -h "${zip}" | awk '{print $1}')
+    log "${split}: unpacking $(basename "${zip}") — ${total} entries, ${zip_size}"
+    unzip -o "${zip}" -d "${REDS_DIR}" | awk -v total="${total}" '
+      BEGIN { start = systime(); n = 0 }
+      # Only count actual file extractions, not the "Archive: ..." header
+      # or "creating: <dir>/" lines.
+      /^[[:space:]]+(inflating|extracting):/ {
+        n++
+        if (n % 1000 == 0) {
+          elapsed = systime() - start
+          if (elapsed == 0) elapsed = 1
+          rate = n / elapsed
+          eta = (total > n) ? (total - n) / rate : 0
+          printf "  [extract] %d/%d (%.1f%%) — %.0f files/s — ETA %dm%02ds\n",
+                 n, total, 100*n/total, rate, eta/60, eta%60
+          fflush()
+        }
+      }
+      END {
+        elapsed = systime() - start
+        if (elapsed == 0) elapsed = 1
+        printf "  [extract] done — %d files in %dm%02ds (%.0f files/s)\n",
+               n, elapsed/60, elapsed%60, n/elapsed
+      }
+    '
+    ok "${split}: unpacked $(basename "${zip}")"
   done
 
   # If the archives didn't contain a `${split}/` top dir but dropped
