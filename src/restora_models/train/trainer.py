@@ -100,9 +100,24 @@ class Trainer:
 
     def __init__(self, cfg, *, device: torch.device | None = None,
                  out_dir: Path | None = None) -> None:
+        # Startup logging — init is slow (model build + first-batch compile
+        # warmup can easily take 5-10 min on big GPUs) and a silent trainer
+        # is indistinguishable from a hung one. Each major step is logged
+        # with cumulative wall-clock so a slow stage is obvious.
+        t0 = time.perf_counter()
+        def _ilog(msg: str) -> None:
+            print(f"[trainer +{time.perf_counter() - t0:5.1f}s] {msg}", flush=True)
+
         self.cfg = cfg
         self.device = device or torch.device(
             "cuda" if torch.cuda.is_available() else "cpu")
+        if self.device.type == "cuda":
+            cap = torch.cuda.get_device_capability(self.device)
+            name = torch.cuda.get_device_name(self.device)
+            _ilog(f"device: {self.device} ({name}, sm_{cap[0]}{cap[1]}); "
+                  f"torch={torch.__version__}, cuda={torch.version.cuda}")
+        else:
+            _ilog(f"device: {self.device} (CPU — no GPU available)")
         # When the caller passes an explicit `out_dir`, treat it as the
         # final destination. Otherwise build `<run.root>/<run.name>/`.
         if out_dir is not None:
@@ -110,19 +125,31 @@ class Trainer:
         else:
             self.out_dir = Path(cfg.run.root) / cfg.run.name
         self.out_dir.mkdir(parents=True, exist_ok=True)
+        _ilog(f"output dir: {self.out_dir}")
         torch.manual_seed(cfg.train.seed)
 
         # Model
+        _ilog(f"building model: {cfg.model.type}")
         self.model = build_model(cfg.model, num_axes=len(AXES)).to(self.device)
+        n_params = sum(p.numel() for p in self.model.parameters())
+        _ilog(f"  params: {n_params/1e6:.1f} M; moved to {self.device}")
         # channels_last is a 4D layout — the model's internal convs still
         # benefit from it after TemporalAlignStem flattens the 5D clip to
         # 4D features, but we don't apply it on the raw 5D batch tensor.
         if cfg.train.memory_format == "channels_last":
             self.model = self.model.to(memory_format=torch.channels_last)
+            _ilog("  memory_format: channels_last")
         if cfg.train.compile:
+            _ilog(f"  torch.compile(mode={cfg.train.compile_mode}) wrapper attached "
+                  "— actual graph compile happens on first forward (can take "
+                  "minutes; nvrtc errors here mean PyTorch's CUDA toolchain is "
+                  "too old for this GPU's compute capability — try --no-compile)")
             self.model = torch.compile(self.model, mode=cfg.train.compile_mode)
+        else:
+            _ilog("  torch.compile: DISABLED (eager mode)")
 
         # Loss aggregator
+        _ilog("building loss set + LPIPS model")
         self.loss_set = LossSet(cfg.losses)
         self.loss_set.to(self.device)
         # Reuse the LPIPS model from the loss set for per-axis LPIPS metric
@@ -134,6 +161,7 @@ class Trainer:
         self.optimizer, self.optimizer_kind = _build_optimizer(
             self.model, cfg.train.lr, cfg.train.weight_decay,
             prefer_muon=prefer_muon)
+        _ilog(f"optimizer: {self.optimizer_kind}, lr={cfg.train.lr}")
 
         # LR scheduler: linear warmup + cosine decay to 1e-2 * base_lr.
         warmup_steps = max(1, int(cfg.scheduler.warmup_steps))
@@ -154,10 +182,14 @@ class Trainer:
         # degradation pipeline inside each worker (see
         # compound_wrapper.py), so the main process never sees raw
         # numpy/opencv work between forward passes.
+        _ilog("building composite video dataset (scanning sources)…")
         self.train_ds = build_compound_video_dataset(
             cfg.data.sources, data_cfg=cfg.data, seed=cfg.train.seed)
+        _ilog(f"  dataset: {len(self.train_ds)} windows total")
         loader_cfg = cfg.data.loader
         bs = loader_cfg.batch_size if loader_cfg.batch_size != "auto" else 8
+        _ilog(f"building dataloader (bs={bs}, workers={loader_cfg.num_workers}, "
+              f"prefetch={loader_cfg.prefetch_factor})")
         self.train_loader = DataLoader(
             self.train_ds,
             batch_size=int(bs),
@@ -174,6 +206,11 @@ class Trainer:
         )
 
         self.step = 0
+        _ilog(f"init done in {time.perf_counter() - t0:.1f}s — "
+              "first batch will trigger dataloader-worker spin-up "
+              + ("+ torch.compile JIT (this is the slowest single step)"
+                 if cfg.train.compile else "")
+              + "; subsequent steps will be much faster")
 
         # ---- live UI + preview + tensorboard wiring --------------------
         # Headless when stdout isn't a TTY (e.g. `nohup > log 2>&1 &`) so
@@ -305,6 +342,10 @@ class Trainer:
         save_every = int(self.cfg.train.save_every)
         preview_every_s = float(self.cfg.train.preview_every_s)
 
+        print(f"[trainer] starting fit() — total_steps={total_steps}, "
+              f"log_every={log_every}, save_every={save_every}", flush=True)
+        print("[trainer] requesting first batch (dataloader worker spin-up "
+              "+ first model forward will be the slow step)…", flush=True)
         loader_iter = iter(self.train_loader)
         bs = int(self.train_loader.batch_size or 1)
         with self.ui, self.tb:
@@ -312,12 +353,19 @@ class Trainer:
             self._t_window = time.perf_counter()
             self._samples_window = 0
 
+            _first_step_t0: float | None = None
             while self.step < total_steps:
                 try:
                     batch = next(loader_iter)
                 except StopIteration:
                     loader_iter = iter(self.train_loader)
                     batch = next(loader_iter)
+                if self.step == 0:
+                    _first_step_t0 = time.perf_counter()
+                    print(f"[trainer] first batch received "
+                          "— running first forward+backward (this is when "
+                          "torch.compile JIT actually fires if enabled)…",
+                          flush=True)
                 # Predict whether the *next* step lands on a tick boundary
                 # so the trainer only computes per-axis PSNR/LPIPS (each a
                 # forced CPU sync) on the steps the UI actually consumes.
@@ -326,6 +374,11 @@ class Trainer:
                 log = self._train_step(batch, compute_metrics=will_tick)
                 self.step += 1
                 self._samples_window += bs
+                if self.step == 1 and _first_step_t0 is not None:
+                    print(f"[trainer] first step done in "
+                          f"{time.perf_counter() - _first_step_t0:.1f}s "
+                          "— subsequent steps will be much faster",
+                          flush=True)
 
                 if log_every > 0 and self.step % log_every == 0:
                     now = time.perf_counter()

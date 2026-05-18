@@ -97,7 +97,10 @@ def train(
     run_name: Optional[str] = typer.Option(None, "--run-name"),
     batch_size: Optional[int] = typer.Option(None, "--batch-size"),
     total_steps: Optional[int] = typer.Option(None, "--total-steps"),
-    compile_: bool = typer.Option(False, "--compile/--no-compile"),
+    compile_: Optional[bool] = typer.Option(None, "--compile/--no-compile",
+        help="Override cfg.train.compile. Omit to use the value from the YAML. "
+             "Use --no-compile to disable torch.compile (e.g. when nvrtc rejects "
+             "the GPU arch on cards newer than the installed PyTorch supports)."),
     amp: Optional[str] = typer.Option(None, "--amp"),
     out_dir: Optional[Path] = typer.Option(None, "--out-dir", help="Override cfg.run.root"),
 ) -> None:
@@ -113,8 +116,8 @@ def train(
     if total_steps is not None:
         cfg.train.total_steps = int(total_steps)
         cfg.scheduler.total_steps = int(total_steps)
-    if compile_:
-        cfg.train.compile = True
+    if compile_ is not None:
+        cfg.train.compile = compile_
     if amp is not None:
         cfg.train.amp = amp
     trainer = Trainer(cfg, out_dir=out_dir)
