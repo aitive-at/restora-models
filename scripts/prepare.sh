@@ -243,9 +243,15 @@ download_split() {
   # Lift sequence dirs (NNN/) into ${target_dir}, no matter how deeply
   # the zip nested them. Since extract_tmp is per-split there's no risk
   # of finding a different split's sequences.
+  #
+  # `find -print -quit` (not `find | head -n1`) is load-bearing: under
+  # `set -euo pipefail`, when find finds more matches than head consumes,
+  # it gets SIGPIPE (exit 141), pipefail propagates that, and set -e
+  # kills the script silently right here. `-print -quit` makes find
+  # stop after the first hit — no pipe, no SIGPIPE, no premature exit.
   mkdir -p "${target_dir}"
   local first_seq
-  first_seq=$(find "${extract_tmp}" -mindepth 1 -type d -name '[0-9][0-9][0-9]' 2>/dev/null | head -n1)
+  first_seq=$(find "${extract_tmp}" -mindepth 1 -type d -name '[0-9][0-9][0-9]' -print -quit 2>/dev/null)
   if [ -z "${first_seq}" ]; then
     err "${split}: no sequence dirs (NNN/) found under ${extract_tmp}"
     return 1
