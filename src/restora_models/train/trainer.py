@@ -120,11 +120,26 @@ class Trainer:
         else:
             _ilog(f"device: {self.device} (CPU — no GPU available)")
         # When the caller passes an explicit `out_dir`, treat it as the
-        # final destination. Otherwise build `<run.root>/<run.name>/`.
+        # final destination. Otherwise build `<run.root>/<run.name>/` —
+        # with one twist for warm-starts: if `resume_from` is set and no
+        # explicit `out_dir` was given, auto-suffix the run name with the
+        # source checkpoint's stem so the warm-start lands in a sibling
+        # directory (e.g. `local_temporal` + `iter_0010000.pt` ->
+        # `local_temporal_resume_iter_0010000`). This keeps the source
+        # run's checkpoints + TensorBoard event file intact — without
+        # the suffix, mkdir(exist_ok=True) would silently reuse the old
+        # dir, the new TB events would render on top of the old curves
+        # (step counter resets to 0), and `iter_<save_every>.pt` files
+        # would be overwritten once the warm-start crossed those steps.
+        # Idempotent: re-resuming from the same ckpt lands in the same
+        # suffixed dir.
         if out_dir is not None:
             self.out_dir = Path(out_dir)
         else:
-            self.out_dir = Path(cfg.run.root) / cfg.run.name
+            run_name = cfg.run.name
+            if resume_from is not None:
+                run_name = f"{run_name}_resume_{Path(resume_from).stem}"
+            self.out_dir = Path(cfg.run.root) / run_name
         self.out_dir.mkdir(parents=True, exist_ok=True)
         _ilog(f"output dir: {self.out_dir}")
         torch.manual_seed(cfg.train.seed)

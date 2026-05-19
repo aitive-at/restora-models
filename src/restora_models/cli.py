@@ -108,7 +108,10 @@ def train(
         help="Warm-start from this checkpoint: load model weights (EMA "
              "preferred), reset optimizer/scheduler/step counter. Trains "
              "for cfg.train.total_steps additional steps under the current "
-             "config — including any loss-weight changes. Use this for "
+             "config — including any loss-weight changes. Output lands in "
+             "`<run.root>/<run.name>_resume_<ckpt-stem>/` (sibling of the "
+             "source run, so its checkpoints + TensorBoard logs stay "
+             "intact); pass --out-dir to override that. Use this for "
              "fine-tuning runs after a preset change (e.g. temporal_v1 -> "
              "temporal_v2)."),
 ) -> None:
