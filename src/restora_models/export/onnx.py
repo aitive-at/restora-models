@@ -140,6 +140,14 @@ def export_onnx_from_model(
         sidecar = export_path.with_suffix(".task_map.json")
         sidecar.write_text(json.dumps(task_map, indent=2, sort_keys=True))
 
+    # Static dtype-consistency check at TRT-sensitive op boundaries. This
+    # is the export-time guard against the GridSample mixed-dtype regression
+    # that broke a previous fp16 export — see warp.py's `flow_warp` docstring
+    # and docs/integration/training-side-fp16-export.md. Failing loudly here
+    # is much better than shipping an ONNX that crashes the C# consumer at
+    # TRT compile time.
+    _verify_static_dtype_consistency(export_path)
+
     # Verify
     if verify_ep is not None:
         _verify_export(
@@ -150,6 +158,59 @@ def export_onnx_from_model(
         )
 
     return export_path
+
+
+def _verify_static_dtype_consistency(export_path: Path) -> None:
+    """Static-scan the exported ONNX for mixed-dtype op boundaries that the
+    TensorRT EP rejects.
+
+    Currently checks `GridSample` (TRT's `IGridSampleLayer` rejects when
+    `input` and `grid` differ in dtype — the exact failure that broke the
+    pre-2026-05-19 fp16 export). Easy to extend with other op_type entries
+    if future TRT versions add similar constraints elsewhere.
+
+    Raises RuntimeError if a mismatch is found — fail-loud over ship-broken.
+    """
+    try:
+        import onnx
+    except ImportError:
+        print("[export] onnx not installed; skipping dtype-consistency check")
+        return
+
+    model = onnx.load(str(export_path))
+    dtype_map: dict[str, str] = {}
+    for init in model.graph.initializer:
+        dtype_map[init.name] = onnx.TensorProto.DataType.Name(init.data_type)
+    for vi in list(model.graph.value_info) + list(model.graph.input) + list(model.graph.output):
+        dt = vi.type.tensor_type.elem_type
+        if dt:
+            dtype_map[vi.name] = onnx.TensorProto.DataType.Name(dt)
+
+    # op_type → indices of inputs that must share a dtype with input[0]
+    SAME_DTYPE_INPUTS = {
+        "GridSample": (0, 1),   # (input, grid) — TRT IGridSampleLayer
+    }
+
+    problems: list[str] = []
+    for node in model.graph.node:
+        if node.op_type not in SAME_DTYPE_INPUTS:
+            continue
+        indices = SAME_DTYPE_INPUTS[node.op_type]
+        dtypes = [dtype_map.get(node.input[i], "?") for i in indices]
+        if len(set(dtypes)) > 1:
+            problems.append(
+                f"  {node.op_type} {node.name!r}: inputs at indices {indices} "
+                f"have differing dtypes {dtypes}"
+            )
+
+    if problems:
+        raise RuntimeError(
+            "ONNX export failed dtype-consistency check at TRT-sensitive ops. "
+            "This typically means a model op (often involving torch.linspace "
+            "or other ONNX lowerings that ignore dtype kwargs) leaked an fp32 "
+            "intermediate into an otherwise fp16 graph. See warp.py for the "
+            "established mitigation pattern (build in fp32 explicitly + cast "
+            "at the op boundary). Offending nodes:\n" + "\n".join(problems))
 
 
 def _verify_export(
