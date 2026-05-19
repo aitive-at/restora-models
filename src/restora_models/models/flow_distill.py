@@ -59,6 +59,22 @@ class FlowDistill(nn.Module):
 
     Forward input:  frames (B, 2, 3, H, W)  -- frame_a, frame_b
     Forward output: flow   (B, 2, H, W)     -- backward flow b -> a
+
+    fp16 deployment contract: this module is an **fp32 island** inside an
+    otherwise-fp16 graph. The iterative flow refinement (the
+    `for blk in self.updates` loop) accumulates intermediate residuals
+    whose magnitudes reach ±65000 after just two iterations — the model
+    was trained in bf16 (range ±3.4e38), so the learned weights aren't
+    constrained to stay representable in fp16 (range ±65504). Native-fp16
+    GPU silicon overflows on the third iteration; CPU EP survives only
+    because it emulates fp16 with fp32 accumulators internally.
+
+    Protection mechanism: `_apply` is overridden to refuse fp16 dtype
+    conversions, so `model.half()` on the parent leaves this submodule's
+    weights in fp32. `forward` then casts at the I/O boundary — fp16 in,
+    fp32 inside, fp16 out — preserving the model-level fp16 contract.
+    bf16 conversions are allowed through unchanged because bf16 has the
+    same dynamic range as fp32; only fp16 is blocked.
     """
 
     def __init__(self, iters: int = 4):
@@ -69,13 +85,52 @@ class FlowDistill(nn.Module):
         self.feat = _FeatureExtractor()
         self.updates = nn.ModuleList([_UpdateBlock() for _ in range(iters)])
 
+    def _apply(self, fn, recurse: bool = True):
+        # Filter out fp16 dtype conversions for this subtree. Device moves
+        # (.cuda()/.cpu()) and other dtypes (bf16, fp32) pass through
+        # unchanged. See class docstring for why.
+        def _filtered(t: torch.Tensor) -> torch.Tensor:
+            new_t = fn(t)
+            if new_t.dtype == torch.float16 and t.dtype != torch.float16:
+                # Caller asked for fp16; refuse, return the original tensor
+                # but apply any non-dtype transforms (device, etc.) by
+                # re-running with dtype preserved.
+                if new_t.device != t.device:
+                    return new_t.to(t.dtype)
+                return t
+            return new_t
+        return super()._apply(_filtered, recurse=recurse)
+
     def forward(self, frames: torch.Tensor) -> torch.Tensor:
         if frames.dim() != 5 or frames.shape[1] != 2:
             raise ValueError(f"expected (B,2,3,H,W), got {tuple(frames.shape)}")
+        in_dtype = frames.dtype
+        # Cast the input to fp32 if it arrived as fp16; the weights are
+        # already fp32 thanks to the _apply override, so the convs need
+        # matching fp32 input. bf16 inputs pass through unchanged
+        # (conv2d natively handles bf16-vs-fp32-weights mixing).
+        if in_dtype == torch.float16:
+            frames = frames.float()
         b, _, _, h, w = frames.shape
         fa = self.feat(frames[:, 0])
         fb = self.feat(frames[:, 1])
         flow = torch.zeros(b, 2, h // 8, w // 8, device=frames.device, dtype=frames.dtype)
         for blk in self.updates:
             flow = flow + blk(fa, fb, flow)
-        return F.interpolate(flow, size=(h, w), mode="bilinear", align_corners=False) * 8.0
+        out = F.interpolate(flow, size=(h, w), mode="bilinear", align_corners=False) * 8.0
+        # Clamp the final flow output to a fp16-safe range before any cast.
+        # Real video flow magnitudes are bounded by image dimensions
+        # (typically <100 px, extreme motion <1024 px), so ±1024 is well
+        # above any plausible real input but safely inside fp16's ±65504.
+        # On synthetic / adversarial inputs (uniform noise, static frames)
+        # the unrolled refinement can produce huge spurious values that
+        # would overflow on cast to fp16 — clamping yields a deterministic
+        # valid result rather than NaN/Inf propagating through the model.
+        # The clamp is a no-op on any real video input.
+        out = torch.clamp(out, -1024.0, 1024.0)
+        # Restore the caller's dtype so downstream modules see what they
+        # expect. fp32 in → fp32 out (no-op cast); fp16 in → fp16 out
+        # (explicit Cast which TRT can fuse away during engine compile).
+        if out.dtype != in_dtype:
+            out = out.to(in_dtype)
+        return out

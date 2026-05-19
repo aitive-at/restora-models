@@ -308,9 +308,19 @@ Run this **identity-gate canary** before trusting any output:
 5. Extract `frames[:, 3, :, :, :]` — the center frame.
 6. Compute MSE between `output` and the center frame.
 7. **Expected:**
-   - fp32 ONNX: PSNR ≥ 120 dB (clamp ceiling, essentially perfect)
-   - fp16 ONNX: PSNR ~65-70 dB (fp16 quantization noise on the
-     identity-gate path; visually lossless)
+   - fp32 ONNX (any EP): PSNR ≥ 120 dB (clamp ceiling, essentially perfect)
+   - fp16 ONNX on CPU EP: PSNR ~65-70 dB (CPU emulates fp16 with fp32
+     accumulators internally, so quantization is only at the I/O boundary)
+   - fp16 ONNX on CUDA / TensorRT EP: PSNR ~55-60 dB (intrinsic native-fp16
+     lab round-trip precision floor on GPU silicon; the identity path
+     goes through `lab_to_rgb(rgb_to_lab(center))` and native fp16
+     can't represent the round-trip more accurately than that —
+     verified directly on Blackwell sm_120, expect similar on sm_100/103)
+
+   The CPU vs GPU fp16 gap is *not* a bug — it's the difference between
+   fp32-emulated and native-silicon fp16 precision. Both are visually
+   lossless (fp16 noise floor is ~3-4 decimal digits; 55 dB is well
+   below any perceptual threshold for restored video).
 
 PSNR-to-bug lookup if the canary fails on fp32:
 
