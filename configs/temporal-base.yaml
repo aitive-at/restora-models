@@ -72,4 +72,10 @@ scheduler:
 run:
   root: "/workspace/runs"
 
-losses: !preset temporal_v1
+# temporal_v2: drops colorfulness (was incentivizing cyan blob mode-collapse
+# on colorize) and bumps chroma_lab 0.5 -> 0.8. See `_LOSS_PRESETS["temporal_v2"]`
+# in src/restora_models/config.py for the full diagnosis + reasoning.
+# Fresh-from-scratch training works but warm-start from a v1 checkpoint is
+# the intended use (the 4 non-colorize axes are well-trained under v1; v2
+# only needs to re-converge colorize).
+losses: !preset temporal_v2

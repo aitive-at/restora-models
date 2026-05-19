@@ -132,6 +132,34 @@ _LOSS_PRESETS: dict[str, list[dict[str, Any]]] = {
         {"name": "temporal_pair", "weight": 0.5},
         {"name": "central_flicker", "weight": 0.3},
     ],
+    # Temporal recipe v2 — colorize mode-collapse fix (2026-05-19).
+    #
+    # Diagnosis: the B300 80k run plateaued at colorize PSNR ~12.5 dB with
+    # visible cyan/turquoise blobs in ambiguous regions (sky, walls). The
+    # colorfulness loss (negated Hasler-Susstrunk, rewarding per-image
+    # variance in opponent channels rg/yb) was contributing -0.16 of loss
+    # budget — half the total absolute loss. Loss landscape was literally
+    # *rewarding* the model for painting a single vivid blob: that boosts
+    # spatial chroma variance cheaply without learning region priors.
+    #
+    # Fix: drop colorfulness to 0 (let chroma_lab + lpips supply all the
+    # color supervision) and bump chroma_lab 0.5 -> 0.8 to recover direct
+    # a/b error pressure. Bounded-object colorization stays good (lpips
+    # + l1 are what drives that); ambiguous regions desaturate toward
+    # neutral instead of blobbing, which is a far better failure mode.
+    #
+    # Use via warm-start from a temporal_v1 checkpoint, NOT from scratch —
+    # the 4 non-colorize axes are well-trained already and we want to
+    # preserve them while letting only the colorize behaviour update.
+    "temporal_v2": [
+        {"name": "l1_rgb", "weight": 1.0},
+        {"name": "lpips_decoded", "weight": 0.4},
+        {"name": "chroma_lab", "weight": 0.8, "apply_to_axes": ["colorize"]},
+        # colorfulness intentionally absent — see v2 docstring above
+        {"name": "freq_l1", "weight": 0.4, "apply_to_axes": ["sharpen"]},
+        {"name": "temporal_pair", "weight": 0.5},
+        {"name": "central_flicker", "weight": 0.3},
+    ],
 }
 
 

@@ -103,6 +103,14 @@ def train(
              "the GPU arch on cards newer than the installed PyTorch supports)."),
     amp: Optional[str] = typer.Option(None, "--amp"),
     out_dir: Optional[Path] = typer.Option(None, "--out-dir", help="Override cfg.run.root"),
+    resume: Optional[Path] = typer.Option(
+        None, "--resume", exists=True, dir_okay=False,
+        help="Warm-start from this checkpoint: load model weights (EMA "
+             "preferred), reset optimizer/scheduler/step counter. Trains "
+             "for cfg.train.total_steps additional steps under the current "
+             "config — including any loss-weight changes. Use this for "
+             "fine-tuning runs after a preset change (e.g. temporal_v1 -> "
+             "temporal_v2)."),
 ) -> None:
     """Train the temporal restoration model from a config."""
     from restora_models.config import load_config
@@ -120,7 +128,7 @@ def train(
         cfg.train.compile = compile_
     if amp is not None:
         cfg.train.amp = amp
-    trainer = Trainer(cfg, out_dir=out_dir)
+    trainer = Trainer(cfg, out_dir=out_dir, resume_from=resume)
     final = trainer.fit()
     typer.echo(f"final checkpoint: {final}")
 

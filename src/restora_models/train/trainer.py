@@ -99,7 +99,8 @@ class Trainer:
     """
 
     def __init__(self, cfg, *, device: torch.device | None = None,
-                 out_dir: Path | None = None) -> None:
+                 out_dir: Path | None = None,
+                 resume_from: Path | None = None) -> None:
         # Startup logging — init is slow (model build + first-batch compile
         # warmup can easily take 5-10 min on big GPUs) and a silent trainer
         # is indistinguishable from a hung one. Each major step is logged
@@ -133,6 +134,30 @@ class Trainer:
         self.model = build_model(cfg.model, num_axes=len(AXES)).to(self.device)
         n_params = sum(p.numel() for p in self.model.parameters())
         _ilog(f"  params: {n_params/1e6:.1f} M; moved to {self.device}")
+
+        # Warm-start: load weights from a previous checkpoint BEFORE
+        # channels_last conversion or torch.compile wrapping (state_dict
+        # keys must match the bare model). We deliberately load ONLY the
+        # weights — not optimizer/scheduler/step — because the typical
+        # warm-start use case is "continue training under a new loss
+        # configuration." The old optimizer momentum is tuned to the old
+        # loss landscape; a fresh optimizer state is the right choice.
+        if resume_from is not None:
+            _ilog(f"warm-start: loading weights from {resume_from}")
+            payload = torch.load(str(resume_from), map_location="cpu", weights_only=False)
+            ema_state = payload.get("ema")
+            if isinstance(ema_state, dict) and ema_state:
+                self.model.load_state_dict(ema_state)
+                _ilog(f"  loaded EMA weights (preferred) from step {payload.get('step', '?')}")
+            elif isinstance(payload.get("model"), dict):
+                self.model.load_state_dict(payload["model"])
+                _ilog(f"  loaded live weights (no EMA in ckpt) from step {payload.get('step', '?')}")
+            else:
+                raise ValueError(
+                    f"--resume {resume_from} has neither 'ema' nor 'model' state_dict")
+            _ilog("  optimizer + scheduler + step counter will be fresh "
+                  "(by design; old optimizer momentum is tied to old loss landscape)")
+
         # channels_last is a 4D layout — the model's internal convs still
         # benefit from it after TemporalAlignStem flattens the 5D clip to
         # 4D features, but we don't apply it on the raw 5D batch tensor.
