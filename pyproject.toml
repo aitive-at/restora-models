@@ -3,7 +3,7 @@ name = "restora-models"
 version = "0.1.0"
 description = "Multi-task video restoration: temporal model with colorize / denoise / sharpen / dejpeg / deblur, optimized for old-film remastering"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.13"
 dependencies = [
   "torch>=2.4",
   "torchvision>=0.19",
